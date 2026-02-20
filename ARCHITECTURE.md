@@ -1,696 +1,661 @@
-# BaluHost - Architecture Documentation
+# BaluDesk Architecture
 
-**Version:** 1.4.2
-**Last Updated:** 29. Januar 2026
-**Status:** ✅ DEPLOYED IN PRODUCTION (seit 25. Januar 2026)
+## High-Level Overview
 
-## 📐 System Overview
-
-BaluHost is a modern, full-stack NAS management application designed for self-hosted file storage and system monitoring. The architecture follows a clear separation of concerns with a React frontend, FastAPI backend, and simulated/real hardware integration.
+BaluDesk follows a **three-tier architecture** with clear separation of concerns:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         Client Layer                         │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  React 18 + TypeScript + Vite + Tailwind CSS       │   │
-│  │  - Dashboard                                        │   │
-│  │  - File Manager (with Drag & Drop, Preview)       │   │
-│  │  - User Management                                  │   │
-│  │  - RAID Management                                  │   │
-│  │  - System Monitor                                   │   │
-│  │  - Audit Logging                                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                            ↕ HTTP/REST API                   │
-└─────────────────────────────────────────────────────────────┘
-                               ↕
-┌─────────────────────────────────────────────────────────────┐
-│                      Backend Layer (FastAPI)                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  API Routes (JWT Auth, CORS, Error Handling)       │   │
-│  │  ├─ /auth      - Authentication                     │   │
-│  │  ├─ /files     - File Operations                    │   │
-│  │  ├─ /users     - User Management                    │   │
-│  │  ├─ /system    - System Info & Monitoring           │   │
-│  │  └─ /logging   - Audit Logs                         │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                            ↕                                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Service Layer (Business Logic)                     │   │
-│  │  ├─ Auth Service        (JWT, Roles)               │   │
-│  │  ├─ File Service        (CRUD, Quota, Ownership)   │   │
-│  │  ├─ User Service        (User Management)          │   │
-│  │  ├─ RAID Service        (Status, Management)       │   │
-│  │  ├─ SMART Service       (Disk Health)              │   │
-│  │  ├─ Telemetry Service   (System Metrics)           │   │
-│  │  ├─ Audit Logger        (Activity Tracking)        │   │
-│  │  ├─ Permissions Service (Access Control)           │   │
-│  │  ├─ Power Manager       (CPU Frequency Scaling)    │   │
-│  │  ├─ Fan Control         (PWM, Temperature Curves)  │   │
-│  │  ├─ Monitoring Orch.    (Unified Collectors)       │   │
-│  │  ├─ Service Status      (Health Monitoring)        │   │
-│  │  ├─ Admin DB            (Database Inspection)      │   │
-│  │  ├─ Energy Stats        (Tapo Integration)         │   │
-│  │  └─ Network Discovery   (mDNS/Bonjour)             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                               ↕
-┌─────────────────────────────────────────────────────────────┐
-│                    Storage & System Layer                    │
-│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │  File System     │  │  RAID Arrays │  │  System APIs │ │
-│  │  (dev-storage/)  │  │  (mdadm)     │  │  (psutil)    │ │
-│  └──────────────────┘  └──────────────┘  └──────────────┘ │
-│           Dev Mode: Simulated    │    Prod Mode: Real       │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                        Presentation Layer                      │
+│                    (Electron + React Frontend)                 │
+│                                                                │
+│  • User Interface (React Components)                           │
+│  • System Tray Integration                                     │
+│  • IPC Client (communicates with Main Process)                 │
+│  • State Management (Zustand)                                  │
+└────────────────────────┬───────────────────────────────────────┘
+                         │
+                         │ Electron IPC (JSON Messages)
+                         │
+┌────────────────────────┴───────────────────────────────────────┐
+│                      Application Layer                         │
+│                   (Electron Main Process)                      │
+│                                                                │
+│  • IPC Bridge (Frontend ↔ C++ Backend)                         │
+│  • Process Manager (spawns C++ backend)                        │
+│  • System Tray Controller                                      │
+│  • Auto-Update Manager                                         │
+└────────────────────────┬───────────────────────────────────────┘
+                         │
+                         │ stdin/stdout JSON Messages
+                         │
+┌────────────────────────┴───────────────────────────────────────┐
+│                         Business Logic Layer                   │
+│                         (C++ Sync Engine)                      │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Sync Engine                                             │  │
+│  │  • Change Detection (Local + Remote)                     │  │
+│  │  • Conflict Resolution                                   │  │
+│  │  • Upload/Download Manager                               │  │
+│  │  • Queue Management                                      │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Filesystem Watcher                                      │  │
+│  │  • Platform-Specific Implementations                     │  │
+│  │  • Event Debouncing                                      │  │
+│  │  • Change Notification                                   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  HTTP Client                                             │  │
+│  │  • REST API Calls (libcurl)                              │  │
+│  │  • JWT Token Management                                  │  │
+│  │  • Connection Pooling                                    │  │
+│  │  • Retry Logic                                           │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Local Database (SQLite)                                 │  │
+│  │  • Sync State                                            │  │
+│  │  • File Metadata                                         │  │
+│  │  • Conflict History                                      │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────┬───────────────────────────────────────┘
+                         │
+                         │ HTTPS REST API
+                         │
+┌────────────────────────┴───────────────────────────────────────┐
+│                         Data Layer                             │
+│                     (BaluHost NAS Backend)                     │
+│                                                                │
+│  • File Storage (FastAPI)                                      │
+│  • User Management                                             │
+│  • Sync Endpoints                                              │
+│  • Conflict Resolution API                                     │
+└────────────────────────────────────────────────────────────────┘
 ```
-
-## 🏗️ Technology Stack
-
-### Frontend
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Framework | React 18 | UI library with hooks and concurrent features |
-| Language | TypeScript | Type-safe development |
-| Build Tool | Vite | Fast dev server and optimized builds |
-| Styling | Tailwind CSS | Utility-first CSS framework |
-| Routing | React Router | Client-side navigation |
-| Charts | Recharts | Data visualization |
-| HTTP Client | fetch API | API communication |
-
-### Backend
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Framework | FastAPI | Modern, async Python web framework |
-| Language | Python 3.11+ | Backend language with type hints |
-| Validation | Pydantic | Data validation and serialization |
-| Server | Uvicorn | ASGI server for FastAPI |
-| Auth | JWT | Token-based authentication |
-| System Monitoring | psutil | Cross-platform system utilities |
-| Testing | pytest | Unit and integration testing |
-
-### Development
-| Tool | Purpose |
-|------|---------|
-| `start_dev.py` | Orchestrates backend and frontend in dev mode |
-| Dev Mode | Sandbox with 2x5GB RAID1 simulation |
-| Hot Reload | Vite HMR + Uvicorn --reload |
-| Mock Data | Deterministic seed data for testing |
-
-## 📦 Project Structure
-
-```
-baluhost/
-├── backend/                    # FastAPI Backend
-│   ├── app/
-│   │   ├── __init__.py        # Version info
-│   │   ├── main.py            # FastAPI app entry point
-│   │   ├── api/               # API Layer
-│   │   │   ├── deps.py        # Dependencies (auth, user context)
-│   │   │   └── routes/        # API endpoints
-│   │   │       ├── auth.py    # Authentication endpoints
-│   │   │       ├── files.py   # File operations
-│   │   │       ├── users.py   # User management
-│   │   │       ├── system.py  # System info & monitoring
-│   │   │       └── logging.py # Audit logs
-│   │   ├── services/          # Business Logic Layer
-│   │   │   ├── auth.py        # JWT authentication
-│   │   │   ├── files.py       # File management
-│   │   │   ├── users.py       # User management
-│   │   │   ├── permissions.py # Access control
-│   │   │   ├── file_metadata.py # File ownership
-│   │   │   ├── raid.py        # RAID management
-│   │   │   ├── smart.py       # Disk health monitoring
-│   │   │   ├── telemetry.py   # System metrics collection
-│   │   │   ├── disk_monitor.py # Disk I/O monitoring
-│   │   │   ├── audit_logger.py # Activity logging
-│   │   │   ├── system.py      # System info
-│   │   │   ├── jobs.py        # Background jobs
-│   │   │   └── seed.py        # Dev mode seed data
-│   │   ├── schemas/           # Pydantic Models (API contracts)
-│   │   │   ├── auth.py        # Auth models
-│   │   │   ├── files.py       # File models
-│   │   │   ├── user.py        # User models
-│   │   │   └── system.py      # System models
-│   │   ├── core/              # Core utilities
-│   │   │   └── config.py      # Configuration management
-│   │   └── compat/            # Python version compatibility
-│   ├── tests/                 # Test suite
-│   │   ├── test_permissions.py
-│   │   ├── test_audit_logging.py
-│   │   ├── test_dev_mode.py
-│   │   └── ...
-│   ├── scripts/               # Utility scripts
-│   │   ├── dev_check.py
-│   │   ├── reset_dev_storage.py
-│   │   └── ...
-│   ├── dev-storage/           # Dev mode sandbox (2x5GB RAID1)
-│   ├── dev-tmp/               # Temporary files (dev mode)
-│   ├── pyproject.toml         # Python dependencies
-│   └── README.md
-│
-├── client/                    # React Frontend
-│   ├── src/
-│   │   ├── main.tsx           # App entry point
-│   │   ├── App.tsx            # Root component
-│   │   ├── pages/             # Page components
-│   │   │   ├── Dashboard.tsx  # System overview
-│   │   │   ├── FileManager.tsx # File browser with preview
-│   │   │   ├── UserManagement.tsx
-│   │   │   ├── RaidManagement.tsx
-│   │   │   ├── SystemMonitor.tsx
-│   │   │   ├── Logging.tsx    # Audit logs
-│   │   │   └── Login.tsx
-│   │   ├── components/        # Reusable components
-│   │   │   ├── Layout.tsx
-│   │   │   └── ...
-│   │   ├── api/               # API client functions
-│   │   │   ├── logging.ts
-│   │   │   ├── raid.ts
-│   │   │   └── smart.ts
-│   │   ├── lib/               # Utilities
-│   │   │   └── api.ts         # Base API client
-│   │   └── hooks/             # Custom React hooks
-│   ├── public/                # Static assets
-│   ├── index.html
-│   ├── vite.config.ts         # Vite configuration
-│   ├── tailwind.config.js     # Tailwind configuration
-│   ├── package.json
-│   └── README.md
-│
-├── server/                    # Legacy Express Backend (deprecated)
-│   └── ... (not actively developed)
-│
-├── docs/                      # Documentation
-│   ├── AUDIT_LOGGING.md
-│   ├── DISK_IO_MONITOR.md
-│   ├── NETWORK_DRIVE_SETUP.md
-│   ├── PERFORMANCE_ANALYSIS.md
-│   ├── RAID_SETUP_WIZARD.md
-│   └── ...
-│
-├── scripts/                   # Project scripts
-│   ├── mount-dev-storage.ps1  # Mount dev storage as network drive
-│   └── unmount-dev-storage.ps1
-│
-├── start_dev.py               # Dev environment orchestrator
-├── README.md                  # Main documentation
-├── TECHNICAL_DOCUMENTATION.md # Complete feature docs
-├── TODO.md                    # Roadmap
-├── CONTRIBUTING.md            # Contribution guidelines
-└── ARCHITECTURE.md            # This file
-```
-
-## 🔐 Authentication & Authorization
-
-### Authentication Flow
-
-```
-┌──────┐                            ┌──────────┐
-│Client│                            │ Backend  │
-└──┬───┘                            └────┬─────┘
-   │                                     │
-   │ POST /api/auth/login                │
-   │ { username, password }              │
-   │────────────────────────────────────>│
-   │                                     │
-   │                  Validate credentials
-   │                  Generate JWT token │
-   │                                     │
-   │        200 OK                       │
-   │ { token, user: { id, role, ... } }  │
-   │<────────────────────────────────────│
-   │                                     │
-   │ Store token in localStorage         │
-   │                                     │
-   │ GET /api/files/list                 │
-   │ Authorization: Bearer <token>       │
-   │────────────────────────────────────>│
-   │                                     │
-   │                      Validate token │
-   │                      Extract user   │
-   │                      Check permissions
-   │                                     │
-   │        200 OK                       │
-   │ { files: [...] }                    │
-   │<────────────────────────────────────│
-```
-
-### Authorization Model
-
-**Roles:**
-- `admin` - Full system access
-- `user` - Limited to own files
-
-**Permission Checks:**
-```python
-def can_access_file(user: User, file: FileItem) -> bool:
-    """Check if user can access a file."""
-    return user.role == "admin" or file.owner_id == user.id
-```
-
-**Protected Routes:**
-- JWT token required in `Authorization: Bearer <token>` header
-- User context populated via `get_current_user` dependency
-- Role checks in route handlers or service layer
-
-## 💾 Data Models
-
-### User Model
-```python
-class User:
-    id: int
-    username: str
-    email: str
-    role: Literal["admin", "user"]
-    created_at: datetime
-```
-
-### File Item Model
-```python
-class FileItem:
-    name: str           # File/folder name
-    path: str           # Relative path
-    is_directory: bool  # True if folder
-    size: int           # Size in bytes (0 for folders)
-    modified: str       # ISO timestamp
-    owner_id: int       # User ID of owner
-```
-
-### RAID Array Model
-```python
-class RaidArray:
-    name: str           # e.g., "md0"
-    level: str          # e.g., "raid1"
-    state: str          # healthy, degraded, rebuilding
-    size_gb: int        # Total capacity
-    devices: List[RaidDevice]
-    
-class RaidDevice:
-    name: str           # e.g., "sda1"
-    state: str          # active, spare, failed
-```
-
-### Telemetry Snapshot
-```python
-class TelemetrySnapshot:
-    timestamp: str
-    cpu_percent: float
-    memory_percent: float
-    disk_read_mbps: float
-    disk_write_mbps: float
-    network_down_mbps: float
-    network_up_mbps: float
-```
-
-## 🔄 Request Flow
-
-### Example: File Upload
-
-```
-1. User drops file in FileManager
-   └─> handleDrop() triggered
-   
-2. Frontend prepares FormData
-   └─> POST /api/files/upload
-       └─> Authorization: Bearer <token>
-       └─> Content-Type: multipart/form-data
-       
-3. Backend (FastAPI)
-   ├─> CORS middleware
-   ├─> Authentication (get_current_user)
-   └─> files.upload_file() route handler
-   
-4. Service Layer (files.py)
-   ├─> Validate path (sandbox check)
-   ├─> Check quota (get_storage_info)
-   ├─> Check permissions (owner or admin)
-   ├─> Save file to disk
-   ├─> Update file metadata (owner_id)
-   └─> Log audit event
-   
-5. Response to Frontend
-   └─> 200 OK { message, file: FileItem }
-   
-6. Frontend updates UI
-   ├─> Reload file list
-   ├─> Show success toast
-   └─> Update storage info
-```
-
-## 🎯 Design Decisions
-
-### Why FastAPI over Express?
-
-| Aspect | FastAPI | Express |
-|--------|---------|---------|
-| Type Safety | Native with Pydantic | Requires TypeScript setup |
-| Async Support | Built-in async/await | Requires middleware |
-| Documentation | Auto-generated (Swagger/ReDoc) | Manual |
-| Validation | Pydantic models | Manual or libraries |
-| Performance | High (ASGI) | Good (but sync by default) |
-| Python Integration | Native (psutil, system libs) | Requires child processes |
-
-**Verdict:** FastAPI is better suited for system-level operations and provides better developer experience for a NAS backend.
-
-### Why No Database (Yet)?
-
-**Current State:** File-based metadata storage (`.metadata.json`)
-
-**Reasoning:**
-- Simpler dev setup (no DB required)
-- Sufficient for prototype phase
-- Easy to migrate later
-
-**Planned:** PostgreSQL/SQLite for production
-- User management
-- File metadata
-- Audit logs
-- Session management
-
-### Dev Mode Architecture
-
-**Problem:** Developing NAS features on Windows without real RAID/hardware
-
-**Solution:** Comprehensive simulation layer
-- `DevRaidBackend` simulates mdadm operations
-- Mock SMART data for virtual disks
-- Sandbox storage (2x5GB) with quota enforcement
-- Deterministic seed data for reproducibility
-
-**Benefits:**
-- Cross-platform development (Windows, Linux, Mac)
-- No root/admin privileges required
-- Fast iteration without hardware
-- Easy onboarding for contributors
-
-**Production Fallback:**
-- `MdadmRaidBackend` for real Linux RAID arrays
-- Real SMART data via `smartctl`
-- System-wide file access
-
-## 🚀 Performance Considerations
-
-### Backend Optimization
-- **Async I/O:** All file operations use async
-- **Background Jobs:** Telemetry collection runs independently
-- **Caching:** Storage info cached for 30 seconds
-- **Lazy Loading:** Files loaded on-demand
-
-### Frontend Optimization
-- **Code Splitting:** Vite automatically splits chunks
-- **Lazy Imports:** Routes loaded dynamically
-- **Memoization:** React hooks optimize re-renders
-- **Debouncing:** Search/filter inputs debounced
-
-### Scalability Limits
-**Current Design:**
-- ✅ 1-10 users (typical home NAS)
-- ✅ 10,000-100,000 files
-- ⚠️ Concurrent uploads limited (no queue)
-- ⚠️ File metadata in memory (no DB)
-
-**Future Improvements:**
-- Database for metadata
-- Redis for caching
-- WebSocket for real-time updates
-- Upload queue with progress tracking
-
-## 🔒 Security Architecture
-
-### Authentication
-- JWT tokens with HS256 signing
-- Configurable expiry (default: 12 hours)
-- Token stored in localStorage (client-side)
-
-### Authorization
-- Role-based access control (RBAC)
-- File ownership tracking
-- Permission checks at service layer
-
-### Input Validation
-- Pydantic schemas validate all inputs
-- Path traversal prevention (sandbox checks)
-- File type restrictions (optional)
-
-### CORS Policy
-- Configured for local development
-- Production: Restrict to known origins
-
-### Security TODO
-- [ ] HTTPS in production
-- [ ] Token refresh mechanism
-- [ ] Rate limiting
-- [ ] CSRF protection
-- [ ] Security headers (helmet)
-- [ ] Password hashing with bcrypt/argon2
-
-## 🧪 Testing Strategy
-
-### Test Pyramid
-
-```
-          ┌────────────┐
-          │   E2E      │  Manual testing (TODO: Playwright)
-          │   Tests    │
-          └────────────┘
-        ┌──────────────┐
-        │ Integration  │  API endpoint tests (pytest)
-        │   Tests      │
-        └──────────────┘
-    ┌──────────────────┐
-    │   Unit Tests     │  Service layer tests (pytest)
-    │                  │
-    └──────────────────┘
-```
-
-### Test Coverage
-- Services: 80%+ coverage
-- API routes: Integration tests
-- Frontend: TODO (Vitest)
-
-### Test Fixtures
-- Dev mode provides reproducible state
-- Seed data creates consistent test data
-- Mock services for external dependencies
-
-## 🔮 Future Architecture
-
-### Database Layer
-```
-┌──────────────────────────────────┐
-│  PostgreSQL / MySQL              │
-│  ┌────────────┐  ┌────────────┐ │
-│  │   Users    │  │   Files    │ │
-│  │   Roles    │  │   Metadata │ │
-│  └────────────┘  └────────────┘ │
-│  ┌────────────┐  ┌────────────┐ │
-│  │   Shares   │  │   Audit    │ │
-│  │   Links    │  │   Logs     │ │
-│  └────────────┘  └────────────┘ │
-└──────────────────────────────────┘
-```
-
-### Caching Layer
-```
-┌──────────────────────────────────┐
-│  Redis                           │
-│  - Session storage               │
-│  - API response cache            │
-│  - Real-time metrics             │
-│  - Job queue (uploads)           │
-└──────────────────────────────────┘
-```
-
-### Real-Time Updates
-```
-WebSocket Connection
-  ├─> Upload progress
-  ├─> System notifications
-  ├─> File changes (live sync)
-  └─> RAID status updates
-```
-
-### Microservices (Optional)
-- File service (CRUD, storage)
-- Media service (transcoding, thumbnails)
-- Backup service (snapshots, restore)
-- Notification service (email, webhooks)
-
-## 📊 Monitoring & Observability
-
-### Production Monitoring Stack (ACTIVE)
-- **Prometheus metrics endpoint** (`/api/metrics`) with 40+ custom metrics
-- **Grafana dashboards** for system visualization
-- **20+ alert rules** across 6 severity groups
-- **Structured JSON logging** for log aggregation
-- **Per-thread CPU monitoring** (Task Manager-style)
-
-### Monitoring Orchestrator
-The unified monitoring system uses a collector pattern:
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Monitoring Orchestrator                     │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Collectors                                           │  │
-│  │  ├─ CPUCollector      (usage, freq, temp, threads)   │  │
-│  │  ├─ MemoryCollector   (RAM, swap, available)         │  │
-│  │  ├─ NetworkCollector  (throughput, packets)          │  │
-│  │  ├─ DiskIOCollector   (IOPS, throughput)             │  │
-│  │  └─ ProcessCollector  (BaluHost process tracking)    │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                            ↓                                 │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Database Persistence (with retention policies)       │  │
-│  │  - cpu_samples, memory_samples, network_samples       │  │
-│  │  - disk_io_samples, process_samples                   │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Power & Hardware Monitoring
-- **Power Management**: CPU frequency scaling (AMD Ryzen & Intel)
-- **Fan Control**: PWM control with temperature curves
-- **Energy Monitoring**: Tapo smart plug integration (P115/P110)
-- **Service Status**: Health dashboard for all services
-
-### Scheduler Architecture
-
-The Scheduler Service provides unified management for all background jobs with execution tracking:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Scheduler Service                         │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Managed Schedulers (6)                               │  │
-│  │  ├─ raid_scrub       (RAID integrity, weekly)        │  │
-│  │  ├─ smart_scan       (Disk health, hourly)           │  │
-│  │  ├─ backup           (Auto backup, daily)            │  │
-│  │  ├─ sync_check       (Sync triggers, 5 min)          │  │
-│  │  ├─ notification_check (Device warnings, hourly)     │  │
-│  │  └─ upload_cleanup   (Chunked uploads, daily)        │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                            ↓                                 │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Execution Flow                                       │  │
-│  │  1. APScheduler triggers job at interval              │  │
-│  │  2. SchedulerService creates SchedulerExecution       │  │
-│  │  3. Job runs with status tracking (running→complete)  │  │
-│  │  4. Result/error logged to database                   │  │
-│  │  5. Service status integration (RAID/SMART)           │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                            ↓                                 │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Database Tables                                      │  │
-│  │  - scheduler_executions (history, timing, errors)    │  │
-│  │  - scheduler_configs (intervals, enabled state)       │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                            ↓                                 │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Frontend Dashboard (SchedulerDashboard.tsx)         │  │
-│  │  - Overview tab: Status cards for all schedulers      │  │
-│  │  - Table tab: Run-now, toggle enable/disable          │  │
-│  │  - History tab: Per-scheduler execution logs          │  │
-│  │  - Timeline tab: Visual execution timeline            │  │
-│  │  - Settings tab: Interval configuration               │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Key Features:**
-- **Run-Now**: Trigger any scheduler immediately via API/UI
-- **Retry Mechanism**: Re-run failed executions
-- **Timeline View**: Visual history across all schedulers
-- **Service Integration**: RAID scrub and SMART scan update service status
-
-### Metrics Categories
-| Category | Metrics | Endpoint |
-|----------|---------|----------|
-| System | CPU, memory, disk, network | `/api/metrics` |
-| RAID | Array status, sync progress | `/api/system/raid/status` |
-| SMART | Disk health, temperature | `/api/system/smart/status` |
-| Application | HTTP requests, DB connections | `/api/metrics` |
-| Power | CPU frequency, consumption | `/api/power/status` |
-| Fans | RPM, PWM, temperature | `/api/fans/status` |
-| Energy | Watts, kWh, cost | `/api/energy/status` |
-
-## 🎓 Learning Path for Contributors
-
-### Prerequisites
-1. Python basics (functions, classes, async/await)
-2. TypeScript/JavaScript (ES6+, promises, async/await)
-3. React fundamentals (components, hooks, state)
-4. REST API concepts
-
-### Understanding BaluHost
-1. Read `README.md` - Project overview
-2. Run `python start_dev.py` - See it in action
-3. Read `TECHNICAL_DOCUMENTATION.md` - Feature details
-4. Read this file - Architecture overview
-5. Read `CONTRIBUTING.md` - Development guidelines
-
-### Code Exploration Path
-1. Start with `backend/app/main.py` - App entry point
-2. Follow a route: `api/routes/files.py` → `services/files.py`
-3. Understand data flow: Request → Route → Service → Response
-4. Check schemas: `schemas/files.py` - Data models
-5. Read tests: `tests/test_permissions.py` - How features work
-
-### First Contribution Ideas
-- Fix a typo in documentation
-- Add a test for existing functionality
-- Implement a small feature from TODO.md
-- Improve error messages
-- Add code comments
-
-## 📞 Questions?
-
-If you have questions about the architecture:
-1. Check existing documentation
-2. Open a GitHub Discussion
-3. Join our community (TODO: Discord/Matrix)
 
 ---
 
-## 🔌 Production Deployment Architecture
+## Component Details
 
-### Current Production Setup (ACTIVE)
+### 1. Electron Frontend (Presentation Layer)
+
+**Technology**: React 18 + TypeScript + Electron Renderer Process
+
+**Responsibilities**:
+- Display UI (Dashboard, Folder List, Settings, Activity Log)
+- Handle user input
+- Communicate with Main Process via IPC
+- Display notifications
+
+**Key Components**:
+- `Dashboard.tsx`: Overview of sync status
+- `FolderList.tsx`: List of sync folders
+- `AddFolderDialog.tsx`: Add new sync folder
+- `Settings.tsx`: User preferences
+- `ActivityLog.tsx`: Recent file changes
+
+**Communication Pattern**:
+```typescript
+// Send message to Main Process
+window.electron.ipcRenderer.send('add-sync-folder', {
+  localPath: '/path/to/local',
+  remotePath: '/remote/path'
+});
+
+// Listen for response
+window.electron.ipcRenderer.on('sync-state-update', (event, data) => {
+  updateSyncState(data);
+});
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Nginx Reverse Proxy                       │
-│                    (Port 80, HTTP)                           │
-│  - Rate limiting (100 req/s API, 10 req/s auth)             │
-│  - Security headers (CSP, X-Frame-Options, HSTS)            │
-│  - Static file serving (/var/www/baluhost/)                 │
-│  - WebSocket/SSE support                                     │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-          ┌─────────────┴─────────────┐
-          │                           │
-┌─────────▼─────────┐   ┌─────────────▼─────────────┐
-│  Static Files     │   │    FastAPI Backend        │
-│  (Vite Build)     │   │    (4 Uvicorn Workers)    │
-│  /var/www/baluhost│   │    systemd managed        │
-└───────────────────┘   └─────────────┬─────────────┘
-                                      │
-                        ┌─────────────▼─────────────┐
-                        │   PostgreSQL 17.7         │
-                        │   (Production Database)   │
-                        └───────────────────────────┘
-```
-
-### Systemd Services
-- `baluhost-backend.service` - 4 Uvicorn workers, port 8000
-- Auto-restart on failure
-- Graceful shutdown handling
-
-### Environment
-- **Server**: Debian 13, Ryzen 5 5600GT, 16GB RAM, 250GB NVMe
-- **Database**: PostgreSQL 17.7 with connection pooling
-- **Logging**: Structured JSON (python-json-logger)
 
 ---
 
-**Last Updated:** 29. Januar 2026
-**Version:** 1.4.2
-**Maintainer:** Xveyn
-**Status:** ✅ DEPLOYED IN PRODUCTION
+### 2. Electron Main Process (Application Layer)
+
+**Technology**: Node.js + TypeScript
+
+**Responsibilities**:
+- Spawn C++ backend as child process
+- Bridge communication between Frontend and Backend
+- System tray integration
+- Window management
+- Auto-update logic
+
+**Key Modules**:
+- `backend-manager.ts`: Manages C++ backend lifecycle
+- `ipc-bridge.ts`: Translates IPC messages to backend commands
+- `tray.ts`: System tray icon and menu
+- `auto-updater.ts`: Checks for updates
+
+**Communication Pattern**:
+```typescript
+// Receive from Renderer
+ipcMain.on('add-sync-folder', (event, data) => {
+  // Forward to C++ Backend via stdin
+  backendProcess.stdin.write(JSON.stringify({
+    type: 'add_sync_folder',
+    payload: data
+  }) + '\n');
+});
+
+// Receive from C++ Backend via stdout
+backendProcess.stdout.on('data', (data) => {
+  const message = JSON.parse(data.toString());
+  // Forward to Renderer
+  mainWindow.webContents.send(message.type, message.payload);
+});
+```
+
+---
+
+### 3. C++ Sync Engine (Business Logic Layer)
+
+**Technology**: C++17, CMake, libcurl, SQLite, spdlog
+
+**Responsibilities**:
+- Monitor local filesystem for changes
+- Fetch remote changes from NAS
+- Upload/Download files
+- Resolve conflicts
+- Manage sync state in SQLite
+
+**Core Classes**:
+
+#### `SyncEngine`
+```cpp
+class SyncEngine {
+public:
+  void start();
+  void stop();
+  void addSyncFolder(const std::string& localPath, const std::string& remotePath);
+  void removeSyncFolder(const std::string& folderId);
+  void pauseSync(const std::string& folderId);
+  void resumeSync(const std::string& folderId);
+  
+private:
+  std::unique_ptr<FileWatcher> fileWatcher_;
+  std::unique_ptr<HttpClient> httpClient_;
+  std::unique_ptr<Database> database_;
+  std::unique_ptr<ConflictResolver> conflictResolver_;
+};
+```
+
+#### `FileWatcher`
+```cpp
+class FileWatcher {
+public:
+  virtual void watch(const std::string& path) = 0;
+  virtual void stop() = 0;
+  void setCallback(std::function<void(const FileEvent&)> callback);
+  
+protected:
+  std::function<void(const FileEvent&)> callback_;
+};
+
+// Platform-specific implementations
+class FileWatcherWindows : public FileWatcher { /* ... */ };
+class FileWatcherMac : public FileWatcher { /* ... */ };
+class FileWatcherLinux : public FileWatcher { /* ... */ };
+```
+
+#### `HttpClient`
+```cpp
+class HttpClient {
+public:
+  HttpClient(const std::string& baseUrl);
+  
+  // Authentication
+  bool login(const std::string& username, const std::string& password);
+  void setAuthToken(const std::string& token);
+  
+  // File Operations
+  std::vector<RemoteFile> listFiles(const std::string& path);
+  bool uploadFile(const std::string& localPath, const std::string& remotePath);
+  bool downloadFile(const std::string& remotePath, const std::string& localPath);
+  bool deleteFile(const std::string& remotePath);
+  
+  // Sync Operations
+  std::vector<Change> getChanges(const std::string& since);
+  
+private:
+  CURL* curl_;
+  std::string baseUrl_;
+  std::string authToken_;
+};
+```
+
+#### `Database`
+```cpp
+class Database {
+public:
+  Database(const std::string& dbPath);
+  
+  // Sync Folders
+  void addSyncFolder(const SyncFolder& folder);
+  std::vector<SyncFolder> getSyncFolders();
+  void removeSyncFolder(const std::string& folderId);
+  
+  // File Metadata
+  void upsertFileMetadata(const FileMetadata& metadata);
+  FileMetadata getFileMetadata(const std::string& path);
+  std::vector<FileMetadata> getChangedFilesSince(const std::string& timestamp);
+  
+  // Sync State
+  void updateSyncState(const std::string& folderId, const SyncState& state);
+  SyncState getSyncState(const std::string& folderId);
+  
+  // Conflicts
+  void logConflict(const Conflict& conflict);
+  std::vector<Conflict> getPendingConflicts();
+  
+private:
+  sqlite3* db_;
+};
+```
+
+#### `ConflictResolver`
+```cpp
+class ConflictResolver {
+public:
+  enum Strategy {
+    LAST_WRITE_WINS,
+    KEEP_BOTH,
+    MANUAL
+  };
+  
+  void setStrategy(Strategy strategy);
+  ConflictResolution resolve(const Conflict& conflict);
+  
+private:
+  Strategy strategy_;
+};
+```
+
+**Database Schema**:
+```sql
+-- Sync Folders Configuration
+CREATE TABLE sync_folders (
+  id TEXT PRIMARY KEY,
+  local_path TEXT NOT NULL,
+  remote_path TEXT NOT NULL,
+  status TEXT NOT NULL, -- active, paused, error
+  created_at TEXT NOT NULL,
+  last_sync TEXT
+);
+
+-- File Metadata Cache
+CREATE TABLE file_metadata (
+  path TEXT PRIMARY KEY,
+  folder_id TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  modified_at TEXT NOT NULL,
+  checksum TEXT,
+  is_directory INTEGER NOT NULL,
+  sync_status TEXT NOT NULL, -- synced, pending_upload, pending_download
+  FOREIGN KEY (folder_id) REFERENCES sync_folders(id)
+);
+
+-- Sync State Tracking
+CREATE TABLE sync_state (
+  folder_id TEXT PRIMARY KEY,
+  last_local_scan TEXT,
+  last_remote_scan TEXT,
+  pending_uploads INTEGER DEFAULT 0,
+  pending_downloads INTEGER DEFAULT 0,
+  FOREIGN KEY (folder_id) REFERENCES sync_folders(id)
+);
+
+-- Conflict History
+CREATE TABLE conflicts (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL,
+  folder_id TEXT NOT NULL,
+  local_modified TEXT,
+  remote_modified TEXT,
+  resolution TEXT, -- last_write_wins, keep_both, manual_local, manual_remote
+  resolved_at TEXT,
+  FOREIGN KEY (folder_id) REFERENCES sync_folders(id)
+);
+
+-- Activity Log
+CREATE TABLE activity_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  folder_id TEXT NOT NULL,
+  action TEXT NOT NULL, -- uploaded, downloaded, deleted, conflict
+  path TEXT NOT NULL,
+  details TEXT,
+  FOREIGN KEY (folder_id) REFERENCES sync_folders(id)
+);
+```
+
+---
+
+## Sync Algorithm
+
+### Two-Way Synchronization
+
+```
+1. Local Change Detection (Filesystem Watcher)
+   ↓
+2. Remote Change Detection (API Poll)
+   ↓
+3. Conflict Detection
+   ↓
+4. Conflict Resolution (if needed)
+   ↓
+5. Apply Changes (Upload/Download)
+   ↓
+6. Update Local Database
+```
+
+**Detailed Flow**:
+
+1. **Startup**: Load sync folders from database
+2. **Initial Scan**: Compare local filesystem with database
+3. **Detect Local Changes**: Filesystem watcher fires events
+4. **Fetch Remote Changes**: Poll `/api/sync/changes?since={last_sync}`
+5. **Conflict Check**: Compare `local_modified` vs `remote_modified`
+6. **Resolve Conflicts**: Apply strategy (Last-Write-Wins, Keep Both, Manual)
+7. **Execute Sync**:
+   - Upload modified local files
+   - Download modified remote files
+   - Delete files marked for deletion
+8. **Update Database**: Update `file_metadata` and `sync_state`
+
+---
+
+## IPC Protocol
+
+### Message Format
+
+```json
+{
+  "type": "message_type",
+  "payload": { /* data */ }
+}
+```
+
+### Frontend → Backend Messages
+
+```typescript
+// Add Sync Folder
+{
+  "type": "add_sync_folder",
+  "payload": {
+    "localPath": "/Users/john/Documents",
+    "remotePath": "/Documents"
+  }
+}
+
+// Remove Sync Folder
+{
+  "type": "remove_sync_folder",
+  "payload": {
+    "folderId": "abc123"
+  }
+}
+
+// Pause/Resume Sync
+{
+  "type": "pause_sync",
+  "payload": { "folderId": "abc123" }
+}
+
+{
+  "type": "resume_sync",
+  "payload": { "folderId": "abc123" }
+}
+
+// Get Sync State
+{
+  "type": "get_sync_state",
+  "payload": {}
+}
+
+// Update Settings
+{
+  "type": "update_settings",
+  "payload": {
+    "bandwidthLimit": 1048576, // bytes/sec
+    "conflictStrategy": "last_write_wins"
+  }
+}
+```
+
+### Backend → Frontend Messages
+
+```typescript
+// Sync State Update
+{
+  "type": "sync_state_update",
+  "payload": {
+    "status": "syncing", // idle, syncing, paused, error
+    "uploadSpeed": 524288, // bytes/sec
+    "downloadSpeed": 1048576,
+    "lastSync": "2026-01-02T14:30:00Z",
+    "folders": [
+      {
+        "id": "abc123",
+        "localPath": "/Users/john/Documents",
+        "status": "syncing",
+        "pendingUploads": 5,
+        "pendingDownloads": 2
+      }
+    ]
+  }
+}
+
+// File Change Event
+{
+  "type": "file_change",
+  "payload": {
+    "path": "/Users/john/Documents/report.pdf",
+    "action": "uploaded", // uploaded, downloaded, deleted
+    "size": 1048576,
+    "timestamp": "2026-01-02T14:35:00Z"
+  }
+}
+
+// Conflict Detected
+{
+  "type": "conflict_detected",
+  "payload": {
+    "path": "/Users/john/Documents/data.xlsx",
+    "localModified": "2026-01-02T14:30:00Z",
+    "remoteModified": "2026-01-02T14:32:00Z",
+    "requiresManualResolution": true
+  }
+}
+
+// Error
+{
+  "type": "error",
+  "payload": {
+    "code": "AUTH_FAILED",
+    "message": "Authentication failed. Please re-login.",
+    "details": "Token expired"
+  }
+}
+```
+
+---
+
+## Security Considerations
+
+### Credential Storage
+
+- **Windows**: Windows Credential Manager API
+- **macOS**: Keychain Services API
+- **Linux**: libsecret (GNOME Keyring, KWallet)
+
+```cpp
+class CredentialStore {
+public:
+  static void saveCredentials(const std::string& username, const std::string& token);
+  static std::string loadToken(const std::string& username);
+  static void deleteCredentials(const std::string& username);
+};
+```
+
+### Secure Communication
+
+- All HTTP requests use HTTPS (TLS 1.2+)
+- Certificate validation enabled (can disable for self-signed)
+- JWT token in Authorization header
+- Token refresh before expiry
+
+### IPC Security
+
+- Renderer process is sandboxed
+- No direct filesystem access from renderer
+- All file operations go through IPC
+- JSON schema validation on all messages
+
+---
+
+## Performance Optimizations
+
+### 1. Chunked Upload/Download
+```cpp
+// Upload large files in 5MB chunks
+const size_t CHUNK_SIZE = 5 * 1024 * 1024;
+
+bool uploadFile(const std::string& path) {
+  size_t fileSize = getFileSize(path);
+  size_t chunks = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+  
+  for (size_t i = 0; i < chunks; ++i) {
+    size_t offset = i * CHUNK_SIZE;
+    size_t length = std::min(CHUNK_SIZE, fileSize - offset);
+    uploadChunk(path, offset, length);
+  }
+}
+```
+
+### 2. Connection Pooling
+```cpp
+// Reuse CURL handles
+std::vector<CURL*> curlPool_;
+```
+
+### 3. Batch Operations
+```cpp
+// Upload multiple small files in one request
+std::vector<std::string> batchUpload(const std::vector<std::string>& files);
+```
+
+### 4. Database Indexing
+```sql
+CREATE INDEX idx_file_metadata_folder ON file_metadata(folder_id);
+CREATE INDEX idx_file_metadata_status ON file_metadata(sync_status);
+CREATE INDEX idx_conflicts_resolved ON conflicts(resolved_at);
+```
+
+---
+
+## Error Handling
+
+### Retry Strategy
+
+```cpp
+class RetryPolicy {
+public:
+  static constexpr int MAX_RETRIES = 3;
+  static constexpr int BASE_DELAY_MS = 1000;
+  
+  bool shouldRetry(int attemptCount, const Error& error) {
+    if (attemptCount >= MAX_RETRIES) return false;
+    return error.isTransient(); // network errors, 5xx responses
+  }
+  
+  int getDelayMs(int attemptCount) {
+    return BASE_DELAY_MS * std::pow(2, attemptCount); // exponential backoff
+  }
+};
+```
+
+### Error Types
+
+```cpp
+enum class ErrorCode {
+  // Network Errors
+  NETWORK_UNREACHABLE,
+  CONNECTION_TIMEOUT,
+  DNS_RESOLUTION_FAILED,
+  
+  // Auth Errors
+  AUTH_FAILED,
+  TOKEN_EXPIRED,
+  INSUFFICIENT_PERMISSIONS,
+  
+  // File Errors
+  FILE_NOT_FOUND,
+  FILE_ACCESS_DENIED,
+  DISK_FULL,
+  
+  // Sync Errors
+  CONFLICT_DETECTED,
+  CHECKSUM_MISMATCH,
+  QUOTA_EXCEEDED
+};
+```
+
+---
+
+## Testing Strategy
+
+### C++ Unit Tests (Google Test)
+
+```cpp
+TEST(SyncEngineTest, DetectsLocalChanges) {
+  SyncEngine engine;
+  MockFileWatcher watcher;
+  MockHttpClient client;
+  
+  engine.setFileWatcher(&watcher);
+  engine.setHttpClient(&client);
+  
+  // Simulate file creation
+  watcher.fireEvent(FileEvent{
+    .path = "/test/file.txt",
+    .action = FileAction::CREATED
+  });
+  
+  // Assert upload was triggered
+  EXPECT_TRUE(client.wasUploadCalled("/test/file.txt"));
+}
+```
+
+### Electron E2E Tests (Playwright)
+
+```typescript
+test('user can add sync folder', async ({ page }) => {
+  await page.click('[data-testid="add-folder-button"]');
+  await page.fill('[data-testid="local-path"]', '/Users/test/Documents');
+  await page.fill('[data-testid="remote-path"]', '/Documents');
+  await page.click('[data-testid="submit-button"]');
+  
+  await expect(page.locator('[data-testid="folder-list"]')).toContainText('Documents');
+});
+```
+
+---
+
+## Future Enhancements
+
+1. **Delta Sync**: Only transfer changed blocks (rsync-style)
+2. **P2P Sync**: Direct device-to-device synchronization
+3. **Version History**: Keep file versions (like Dropbox)
+4. **Smart Sync**: Cloud-only files (download on demand)
+5. **LAN Sync**: Faster sync when on same network
+6. **Mobile Apps**: iOS/Android clients
+
+---
+
+**Last Updated**: January 2, 2026  
+**Status**: 🔴 Planning Phase

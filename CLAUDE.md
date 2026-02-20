@@ -4,489 +4,534 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-BaluHost is a full-stack NAS management platform with multiple components:
-- **Backend**: Python FastAPI (primary), located in `backend/`
-- **Frontend**: React + TypeScript + Vite (Web UI), located in `client/`
-- **TUI**: Terminal UI (Textual), located in `backend/baluhost_tui/`
-- **BaluDesk**: Desktop sync client (C++ backend + Electron frontend), located in `baludesk/`
-- **Mobile Apps**: Native Android (Kotlin), iOS implementation guide available
-- **Legacy**: Express/TypeScript backend in `server/` (deprecated, do not modify)
+**BaluDesk** is a cross-platform desktop synchronization client for BaluHost NAS, providing seamless background file synchronization with a modern, intuitive GUI.
 
-**Current Production Status**: ~99% production-ready, deployed in production (Jan 2026). PostgreSQL, security hardening, and deployment complete.
+### Architecture
 
-## Architecture
-
-### Backend (FastAPI)
 ```
-backend/
-├── app/
-│   ├── api/routes/        # API endpoints
-│   ├── services/          # Business logic
-│   ├── schemas/           # Pydantic models
-│   ├── models/            # SQLAlchemy ORM models
-│   └── core/config.py     # Configuration
-├── baluhost_tui/          # Terminal UI application
-├── tests/                 # Pytest tests (40+ files, 364 test functions)
-└── pyproject.toml         # Dependencies
-```
-
-**Key Services**:
-- `auth.py` - JWT authentication, role-based access control (admin/user)
-- `files.py` - File operations, multi-mountpoint support, quota management
-- `raid.py` - RAID management (mdadm integration + dev-mode simulation)
-- `smart.py` - Disk health monitoring via smartctl
-- `telemetry.py` - System metrics collection (CPU, RAM, Network)
-- `disk_monitor.py` - Real-time disk I/O monitoring
-- `audit_logger.py` - JSON-based activity logging
-- `vpn.py` - WireGuard VPN configuration & client management
-- `shares.py` - File sharing (public links + user permissions)
-- `backup.py` - Backup/restore functionality
-- `sync.py` - Desktop sync client coordination
-- `mobile.py` - Mobile device registration with QR code pairing
-- `power_manager.py` - CPU frequency scaling (AMD Ryzen & Intel support)
-- `power_monitor.py` - CPU power-state monitoring
-- `fan_control.py` - PWM fan control with temperature curves
-- `service_status.py` - Service health monitoring for admin dashboard
-- `network_discovery.py` - mDNS/Bonjour for local network discovery
-- `scheduler_service.py` - Unified scheduler management with execution history
-- `admin_db.py` - Secure read-only database inspection
-- `monitoring/orchestrator.py` - Unified monitoring system with collectors
-
-### Frontend (React + TypeScript)
-```
-client/
-├── src/
-│   ├── pages/             # Page components
-│   │   ├── Dashboard.tsx
-│   │   ├── FileManager.tsx
-│   │   ├── RaidManagement.tsx
-│   │   ├── SystemMonitor.tsx
-│   │   ├── SettingsPage.tsx
-│   │   ├── PowerManagement.tsx
-│   │   ├── FanControl.tsx
-│   │   ├── AdminDatabase.tsx
-│   │   ├── AdminHealth.tsx
-│   │   ├── ApiCenterPage.tsx
-│   │   ├── Logging.tsx
-│   │   ├── MobileDevicesPage.tsx
-│   │   ├── RemoteServersPage.tsx
-│   │   └── SchedulerDashboard.tsx
-│   ├── components/        # Reusable components
-│   ├── api/               # API client modules
-│   ├── lib/api.ts         # Base API client (axios)
-│   └── hooks/             # Custom React hooks
-└── vite.config.ts
+┌──────────────────────────────────────────┐
+│       Electron Frontend (React)          │
+│  • User Interface                        │
+│  • System Tray Integration               │
+│  • Settings Management                   │
+└──────────────┬───────────────────────────┘
+               │ IPC (JSON Messages)
+┌──────────────┴───────────────────────────┐
+│      C++ Backend (Sync Engine)           │
+│  • Filesystem Watcher                    │
+│  • HTTP Client (libcurl)                 │
+│  • SQLite Database                       │
+│  • Conflict Resolution                   │
+└──────────────┬───────────────────────────┘
+               │ REST API
+┌──────────────┴───────────────────────────┐
+│      BaluHost NAS (FastAPI)              │
+│  • File Storage                          │
+│  • User Management                       │
+│  • Sync Endpoints                        │
+└──────────────────────────────────────────┘
 ```
 
-**UI Stack**: React 18, Tailwind CSS, Recharts for charts, lucide-react for icons
+### Components
 
-### Database
-- **Dev**: SQLite (`backend/baluhost.db`)
-- **Production**: PostgreSQL 17.7 (deployed, migration complete)
-- **ORM**: SQLAlchemy 2.0+ with Alembic migrations
+- **Backend**: C++ sync engine located in `backend/`
+- **Frontend**: Electron + React + TypeScript UI located in `frontend/`
+- **vcpkg**: C++ package manager (submodule) for dependency management
+
+**Current Status**: Active development, production release planned
+
+---
+
+## Directory Structure
+
+```
+.
+├── backend/               # C++ Sync Engine
+│   ├── src/
+│   │   ├── api/          # HTTP client (libcurl)
+│   │   ├── db/           # SQLite database layer
+│   │   ├── ipc/          # IPC server (JSON over stdin/stdout)
+│   │   ├── services/     # SSH/VPN services
+│   │   ├── sync/         # Sync engine & file watcher
+│   │   └── utils/        # Config, logging, credentials
+│   ├── tests/            # Google Test unit tests
+│   └── CMakeLists.txt    # CMake build configuration
+│
+├── frontend/             # Electron Frontend
+│   ├── src/
+│   │   ├── main/        # Electron main process
+│   │   ├── renderer/    # React UI
+│   │   │   ├── components/
+│   │   │   ├── pages/
+│   │   │   └── hooks/
+│   │   └── lib/         # Shared utilities
+│   └── package.json
+│
+├── docs/                 # Technical documentation
+│   ├── build-and-export.md
+│   ├── conflict-resolution.md
+│   ├── electron-integration.md
+│   ├── frontend-backend-integration.md
+│   ├── local-direct-access.md
+│   ├── network-resilience.md
+│   ├── remote-server-implementation.md
+│   ├── remote-server-start.md
+│   ├── settings-panel.md
+│   └── ssh-vpn-services.md
+│
+├── vcpkg/               # C++ package manager (submodule)
+├── LICENSE              # MIT License
+└── README.md            # Project documentation
+```
+
+---
 
 ## Common Development Commands
 
-### Combined Development Start
+### Quick Start
+
 ```bash
-# Starts both backend (port 3001) and frontend (port 5173)
-python start_dev.py
+# Start both backend and frontend
+python start.py
+
+# Or start components separately:
+python start.py --backend   # Only C++ Backend
+python start.py --frontend  # Only Electron Frontend
 ```
 
-### Backend
+### C++ Backend
+
 ```bash
 cd backend
 
-# Install dependencies
-pip install -e ".[dev]"
+# Configure with vcpkg (first time only)
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
 
-# Run server (dev mode with auto-reload)
-uvicorn app.main:app --reload --port 3001
+# Build
+cmake --build . --config Release
 
 # Run tests
-python -m pytest
-python -m pytest tests/test_permissions.py -v  # Specific test
+ctest --output-on-failure
 
-# Run TUI
-python -m baluhost_tui
-# or
-baluhost-tui  # if installed
+# Run backend directly
+./baludesk_backend
 ```
 
-### Frontend
+**Dependencies** (managed via vcpkg):
+- libcurl 8.5+ (HTTP client)
+- SQLite 3.40+ (local database)
+- nlohmann/json 3.11+ (JSON parsing)
+- spdlog 1.12+ (logging)
+- Google Test 1.14+ (testing)
+
+### Electron Frontend
+
 ```bash
-cd client
+cd frontend
 
 # Install dependencies
 npm install
 
-# Development server
+# Development mode (with hot reload)
 npm run dev
 
 # Build for production
 npm run build
 
-# Run tests
-npm run test        # Unit tests (placeholder)
-npm run test:e2e    # E2E tests (placeholder)
+# Create installers
+npm run package  # Creates installers in dist-electron/
 ```
 
-### Database Migrations
-```bash
-cd backend
+**Tech Stack**:
+- Electron 28
+- React 18 + TypeScript 5
+- Vite 5 (build tool)
+- Tailwind CSS 3 (styling)
+- Zustand 4 (state management)
+- Electron Forge 7 (packaging)
 
-# Create migration
-alembic revision --autogenerate -m "Description"
-
-# Apply migrations
-alembic upgrade head
-
-# Rollback
-alembic downgrade -1
-```
-
-## Development Modes
-
-### Dev Mode (`NAS_MODE=dev`)
-- Enabled by default in `start_dev.py`
-- Creates sandbox storage in `backend/dev-storage/` (2x5GB RAID1 simulated)
-- Mock SMART data, RAID arrays, and system metrics
-- Automatic seed data (admin/DevMode2024, user/User123)
-- Windows-compatible (no Linux dependencies required)
-- Mock VPN key generation (no `wg` command needed)
-
-### Production Mode (`NAS_MODE=prod`)
-- Real mdadm RAID commands
-- Actual smartctl disk health data
-- System-wide file access
-- PostgreSQL database (recommended)
+---
 
 ## Code Standards
 
-### Python (Backend)
-- **Async/await** for all I/O operations
-- **Type hints** required on all functions
-- **Pydantic models** for request/response validation
-- **Docstrings** for all services
-- **Services pattern**: Business logic in `services/`, not in routes
-- **Testing**: Pytest with async support, 80%+ coverage target
-- **Formatting**: Follow existing patterns (4 spaces, snake_case)
+### C++ Backend
 
-**Example service function**:
-```python
-async def get_file_list(
-    path: str,
-    current_user: User,
-    db: Session
-) -> List[FileItem]:
-    """
-    Retrieve file list for a given path.
+- **Modern C++17** required
+- **CMake 3.20+** for build system
+- **Google Test** for unit testing
+- **spdlog** for structured logging
+- **Platform-agnostic** code with platform-specific implementations in separate files
 
-    Args:
-        path: Relative path to list
-        current_user: Authenticated user context
-        db: Database session
+**Naming conventions**:
+- Classes: `PascalCase` (e.g., `SyncEngine`, `FileWatcher`)
+- Functions: `snake_case` (e.g., `start_sync()`, `handle_file_change()`)
+- Constants: `UPPER_SNAKE_CASE` (e.g., `MAX_RETRIES`)
 
-    Returns:
-        List of FileItem objects
+**Example**:
+```cpp
+#include "sync_engine.h"
+#include <spdlog/spdlog.h>
 
-    Raises:
-        PermissionError: If user lacks access
-    """
-    # Implementation
+class SyncEngine {
+public:
+    SyncEngine(const std::string& config_path);
+
+    bool start_sync();
+    void stop_sync();
+
+private:
+    std::unique_ptr<FileWatcher> watcher_;
+    std::shared_ptr<spdlog::logger> logger_;
+};
 ```
 
-### TypeScript (Frontend)
+### TypeScript Frontend
+
 - **Functional components** with hooks (no class components)
 - **TypeScript strict mode** enabled
-- **Tailwind CSS** for all styling (no inline styles)
-- **API calls** through typed client in `src/lib/api.ts`
-- **Error handling**: Use toast notifications (react-hot-toast)
-- **Loading states**: Show loading indicators for async operations
+- **Tailwind CSS** for all styling
+- **IPC communication** via `ipcRenderer` with type-safe messages
+- **Error handling** with user-friendly toast notifications
 
 **Example component**:
 ```typescript
-interface FileItemProps {
-  file: FileItem;
-  onDelete: (path: string) => Promise<void>;
+interface SyncFolderProps {
+  folder: SyncFolder;
+  onRemove: (id: string) => Promise<void>;
 }
 
-export const FileItem: React.FC<FileItemProps> = ({ file, onDelete }) => {
-  const [isDeleting, setIsDeleting] = useState(false);
+export const SyncFolderCard: React.FC<SyncFolderProps> = ({ folder, onRemove }) => {
+  const [isRemoving, setIsRemoving] = useState(false);
 
-  const handleDelete = async () => {
-    setIsDeleting(true);
+  const handleRemove = async () => {
+    setIsRemoving(true);
     try {
-      await onDelete(file.path);
-      toast.success('File deleted');
+      await onRemove(folder.id);
+      toast.success('Folder removed');
     } catch (error) {
-      toast.error('Failed to delete file');
+      toast.error('Failed to remove folder');
     } finally {
-      setIsDeleting(false);
+      setIsRemoving(false);
     }
   };
 
   return (
-    // JSX with Tailwind classes
+    <div className="p-4 border rounded-lg">
+      {/* Component UI */}
+    </div>
   );
 };
 ```
 
-## Important Patterns & Conventions
+---
 
-### Authentication Flow
-1. User logs in via `POST /api/auth/login`
-2. Backend returns JWT token + user info
-3. Frontend stores token in localStorage
-4. All API requests include `Authorization: Bearer <token>` header
-5. Backend validates token via `get_current_user` dependency
+## Key Features
 
-### File Operations
-- All file paths are **relative** to storage root
-- Sandbox checks prevent path traversal
-- Ownership tracked via `.metadata.json` + database
-- Quota checked before uploads
-- Multi-mountpoint support (RAID arrays as separate drives)
+### 1. File Synchronization
+- **Bidirectional sync** between local folders and BaluHost NAS
+- **Real-time file watching** (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows)
+- **Change detection** using file hashes (SHA-256)
+- **Conflict resolution** strategies (server-wins, client-wins, ask-user)
 
-### RAID Management
-- **Dev Mode**: `DevRaidBackend` simulates mdadm with 7 mock disks
-- **Prod Mode**: `MdadmRaidBackend` executes real mdadm commands
-- RAID status parsed from `/proc/mdstat` (Linux) or mocked
-- Frontend shows real-time resync progress
+### 2. Authentication & Security
+- **Credential storage** using OS keychain:
+  - Windows: Credential Manager
+  - macOS: Keychain
+  - Linux: libsecret
+- **HTTPS only** with TLS 1.2+ certificate validation
+- **JWT token** authentication with BaluHost backend
 
-### Background Jobs
-- Telemetry collection runs every 3 seconds (configurable)
-- Disk I/O monitor samples every 1 second
-- Jobs managed via FastAPI lifespan events
-- Graceful shutdown on app termination
+### 3. Remote Server Profiles
+- **Multi-server support** with saved profiles
+- **Auto-discovery** via mDNS/Bonjour
+- **VPN integration** for remote access
+- **SSH tunneling** support
 
-## Testing Strategy
+### 4. UI Features
+- **System tray integration** with status indicators
+- **Desktop notifications** for sync events
+- **Activity log** with real-time updates
+- **Settings panel** with bandwidth limits, auto-start, etc.
 
-### Backend Tests (`backend/tests/`)
-- **Unit tests**: Test services in isolation with mocks
-- **Integration tests**: Test API endpoints with test database
-- **Fixtures**: Use pytest fixtures for database, auth tokens
-- **Test database**: Separate SQLite database for tests
-- **Coverage**: 40+ test files, 364 test functions
-- Run with: `python -m pytest -v`
+---
 
-### Frontend Tests
-- Unit tests with Vitest (configured)
-- E2E tests with Playwright (configured)
-- Visual regression tests (planned)
+## IPC Communication
+
+The frontend (Electron) communicates with the C++ backend via **JSON messages over stdin/stdout**.
+
+### Message Format
+
+```typescript
+// Request from Frontend
+{
+  "id": "unique-request-id",
+  "method": "start_sync",
+  "params": {
+    "folder_id": "abc123"
+  }
+}
+
+// Response from Backend
+{
+  "id": "unique-request-id",
+  "result": {
+    "success": true,
+    "message": "Sync started"
+  }
+}
+
+// Event from Backend (no id)
+{
+  "event": "file_changed",
+  "data": {
+    "path": "/path/to/file.txt",
+    "action": "modified"
+  }
+}
+```
+
+### Available Methods
+
+**Sync Operations**:
+- `start_sync` - Start synchronization for a folder
+- `stop_sync` - Stop synchronization
+- `pause_sync` - Pause synchronization temporarily
+- `get_sync_status` - Get current sync status
+
+**Folder Management**:
+- `add_folder` - Add a new sync folder
+- `remove_folder` - Remove a sync folder
+- `list_folders` - List all configured folders
+
+**Server Management**:
+- `add_server` - Add a BaluHost server profile
+- `remove_server` - Remove a server profile
+- `list_servers` - List all server profiles
+- `test_connection` - Test connection to a server
+
+---
 
 ## Database Schema
 
-Key tables:
-- `users` - User accounts with roles
-- `file_metadata` - File ownership and metadata
-- `shares` - Public share links and user shares
-- `mobile_devices` - Registered mobile devices
-- `vpn_clients` - WireGuard VPN configurations
-- `audit_logs` - Security audit trail
-- `backups` - Backup metadata
-- `sync_folders` - Sync configuration
+**SQLite database**: `baludesk.db`
 
-**Monitoring tables:**
-- `cpu_samples` - CPU usage, frequency, temperature, per-thread usage
-- `memory_samples` - RAM usage
-- `network_samples` - Network throughput
-- `disk_io_samples` - Disk I/O IOPS
-- `process_samples` - BaluHost process tracking
-- `monitoring_config` - Retention policies
+### Tables
 
-**Power management tables:**
-- `power_profile_config` - CPU frequency profiles
-- `power_sample` - Power consumption
-- `power_profile_log` - Profile change history
+**sync_folders**:
+- `id` (TEXT, PRIMARY KEY)
+- `name` (TEXT)
+- `local_path` (TEXT)
+- `remote_path` (TEXT)
+- `server_id` (TEXT, FOREIGN KEY)
+- `enabled` (INTEGER)
+- `last_sync` (TEXT)
 
-**Fan control tables:**
-- `fan_config` - Fan configuration (mode, curves, limits)
-- `fan_sample` - Historical RPM/PWM values
+**servers**:
+- `id` (TEXT, PRIMARY KEY)
+- `name` (TEXT)
+- `url` (TEXT)
+- `username` (TEXT)
+- `created_at` (TEXT)
 
-**Scheduler tables:**
-- `scheduler_executions` - Execution history with timing and status
-- `scheduler_configs` - Per-scheduler configuration and enabled state
+**file_metadata**:
+- `id` (TEXT, PRIMARY KEY)
+- `folder_id` (TEXT, FOREIGN KEY)
+- `path` (TEXT)
+- `hash` (TEXT)
+- `size` (INTEGER)
+- `modified_time` (TEXT)
+- `sync_status` (TEXT)
 
-## API Structure
+**conflicts**:
+- `id` (TEXT, PRIMARY KEY)
+- `folder_id` (TEXT, FOREIGN KEY)
+- `path` (TEXT)
+- `local_hash` (TEXT)
+- `remote_hash` (TEXT)
+- `detected_at` (TEXT)
+- `resolution` (TEXT)
 
-All API routes are prefixed with `/api`:
-- `/api/auth/*` - Authentication
-- `/api/files/*` - File operations
-- `/api/users/*` - User management (admin only)
-- `/api/system/*` - System info, RAID, SMART, telemetry
-- `/api/logging/*` - Audit logs
-- `/api/shares/*` - File sharing
-- `/api/backup/*` - Backup/restore
-- `/api/sync/*` - Desktop sync
-- `/api/mobile/*` - Mobile device management
-- `/api/vpn/*` - VPN configuration
-- `/api/monitoring/*` - Real-time metrics (CPU, Memory, Network, Disk I/O)
-- `/api/power/*` - Power profiles & CPU frequency
-- `/api/fans/*` - Fan control & temperature curves
-- `/api/admin/*` - Admin dashboard services
-- `/api/admin-db/*` - Database inspection
-- `/api/energy/*` - Energy consumption statistics
-- `/api/tapo/*` - TP-Link Tapo smart plug integration
-- `/api/schedulers/*` - Scheduler management (status, history, run-now)
+---
 
-API documentation available at: `http://localhost:3001/docs` (Swagger UI with custom BaluHost styling)
+## Testing Strategy
 
-## Project-Specific Considerations
+### C++ Backend Tests
 
-### DO NOT Modify
-- `server/` directory (legacy Express backend)
-- `.metadata.json` files (managed by file service)
-- `dev-storage/` contents (recreated on startup in dev mode)
+Located in `backend/tests/`, using **Google Test**:
 
-### Security
-- All file operations check ownership or admin role
-- Path traversal prevention via `is_within_sandbox()`
-- JWT tokens expire after 12 hours (configurable)
-- Audit logging for sensitive operations
-- Rate limiting implemented via slowapi
+- `sync_engine_test.cpp` - Sync engine core logic
+- `file_watcher_test.cpp` - File system monitoring
+- `database_test.cpp` - SQLite operations
+- `conflict_resolver_test.cpp` - Conflict resolution
+- `credential_store_test.cpp` - Credential storage
+- `http_client_test.cpp` - API communication
 
-### Middleware
-- `error_counter.py` - Tracks 4xx/5xx errors for admin metrics
-- `security_headers.py` - CSP, X-Frame-Options, HSTS
-- `device_tracking.py` - Mobile device last_seen tracking
-- `local_only.py` - Enforces local-network-only access for sensitive endpoints
+**Run tests**:
+```bash
+cd backend/build
+ctest --output-on-failure -V
+```
 
-### Performance
-- Telemetry: 3s interval (prod), 2s (dev)
-- Telemetry history: 60 samples (3 minutes at 3s interval)
-- Disk I/O: 1s sampling, 120 samples history
-- API response caching: Storage info cached 30s
+### Frontend Tests
 
-### Windows Compatibility
-- All features work on Windows via dev-mode simulation
-- Disk I/O monitor detects Windows drives (`PhysicalDrive0`, `PhysicalDrive1`)
-- No Linux-specific commands required in dev mode
+- **Unit tests**: Vitest (configured)
+- **E2E tests**: Playwright (planned)
+- **Component tests**: React Testing Library (planned)
 
-## Multi-Component Architecture Notes
+---
 
-### BaluDesk (Desktop Sync Client)
-- C++ backend with Electron frontend
-- Located in `baludesk/`
-- Uses vcpkg for C++ dependencies
-- Communicates with backend API for sync operations
+## Platform-Specific Code
 
-### TUI (Terminal UI)
-- Built with Python Textual framework
-- Located in `backend/baluhost_tui/`
-- Provides CLI access to backend features
-- Run with `baluhost-tui` command
+### File Watcher Implementations
 
-### Mobile Apps
-- **Android**: Full native app in `android-app/` (175+ Kotlin files)
-- **iOS**: Implementation guide in `docs/IOS_APP_GUIDE.md`
-- Both use QR code pairing with VPN config embedded
-- 30-day refresh tokens for mobile sessions
+- **Windows**: `file_watcher_windows.cpp` (ReadDirectoryChangesW API)
+- **macOS**: `file_watcher_macos.cpp` (FSEvents API)
+- **Linux**: `file_watcher_linux.cpp` (inotify API)
 
-## Production Status
+The `FileWatcher` class provides a unified interface:
 
-**Deployed**: January 25, 2026 on Debian 13 (Ryzen 5 5600GT, 16GB RAM)
+```cpp
+class FileWatcher {
+public:
+    virtual void start(const std::string& path) = 0;
+    virtual void stop() = 0;
+    virtual ~FileWatcher() = default;
+};
 
-**Completed:**
-- PostgreSQL 17.7 migration
-- Security hardening (OWASP, rate limiting, security headers)
-- Structured JSON logging
-- Systemd deployment with 4 Uvicorn workers
-- Nginx reverse proxy with rate limiting
-- 40+ test files, 364 test functions
-- CI/CD pipeline (GitHub Actions)
-- Comprehensive monitoring (Prometheus/Grafana ready)
+// Platform-specific implementations
+#ifdef _WIN32
+    using PlatformFileWatcher = FileWatcherWindows;
+#elif __APPLE__
+    using PlatformFileWatcher = FileWatcherMacOS;
+#elif __linux__
+    using PlatformFileWatcher = FileWatcherLinux;
+#endif
+```
 
-**Optional/Future:**
-- SSL/HTTPS (currently HTTP on port 80)
-- Email notifications
-- PWA support
-- Localization (i18n)
+---
 
-See `PRODUCTION_READINESS.md` for complete checklist.
+## Build & Packaging
 
-## Documentation Structure
+### Windows
 
-- `README.md` - Project overview, quick start
-- `TECHNICAL_DOCUMENTATION.md` - Complete feature documentation (1600+ lines)
-- `ARCHITECTURE.md` - System architecture and design decisions
-- `TODO.md` - Roadmap and planned features
-- `PRODUCTION_READINESS.md` - Production deployment checklist
-- `docs/` - Feature-specific documentation (RAID, VPN, Mobile, etc.)
-- `CONTRIBUTING.md` - Contribution guidelines
-- `SECURITY.md` - Security policy
+```bash
+# Build
+cd backend/build
+cmake --build . --config Release
 
-## Quick Reference: Finding Things
+# Create installer
+cd ../../frontend
+npm run package
+# Output: dist-electron/BaluDesk-Setup-x.x.x.exe
+```
 
-**Authentication logic**: `backend/app/services/auth.py` + `backend/app/api/deps.py`
-**File upload handling**: `backend/app/services/files.py:upload_file()`
-**RAID status**: `backend/app/services/raid.py`
-**Frontend API client**: `client/src/lib/api.ts`
-**Dashboard page**: `client/src/pages/Dashboard.tsx`
-**Database models**: `backend/app/models/`
-**API schemas**: `backend/app/schemas/`
-**Tests**: `backend/tests/`
-**Fan control**: `backend/app/services/fan_control.py`
-**Power management**: `backend/app/services/power_manager.py`
-**Monitoring orchestrator**: `backend/app/services/monitoring/orchestrator.py`
-**Service status**: `backend/app/services/service_status.py`
-**Network discovery**: `backend/app/services/network_discovery.py`
-**Scheduler service**: `backend/app/services/scheduler_service.py`
-**Scheduler Dashboard**: `client/src/pages/SchedulerDashboard.tsx`
+### macOS
+
+```bash
+# Build
+cd backend/build
+cmake --build . --config Release
+
+# Create DMG
+cd ../../frontend
+npm run package
+# Output: dist-electron/BaluDesk-x.x.x.dmg
+```
+
+### Linux
+
+```bash
+# Build
+cd backend/build
+cmake --build . --config Release
+
+# Create AppImage/DEB/RPM
+cd ../../frontend
+npm run package
+# Output: dist-electron/baludesk_x.x.x_amd64.deb
+```
+
+---
 
 ## Development Tips
 
-1. **Always use dev mode** for local development (`python start_dev.py`)
-2. **Check logs** in terminal where `start_dev.py` is running
-3. **API testing**: Use Swagger UI at `http://localhost:3001/docs`
-4. **Database inspection**: Use SQLite browser on `backend/baluhost.db`
-5. **Reset dev environment**: `python backend/scripts/reset_dev_storage.py`
-6. **Test a specific feature**: Write pytest test, then implement feature (TDD)
+1. **Use `start.py`** for combined frontend/backend development
+2. **Check backend logs** in `backend/baludesk.log`
+3. **Check frontend DevTools** (Ctrl+Shift+I in Electron app)
+4. **Test IPC messages** using the built-in DevTools console
+5. **Mock BaluHost API** using the test server in `backend/tests/mock_server.py` (if available)
+
+---
 
 ## Common Issues & Solutions
 
-**Backend won't start**: Check if port 3001 is already in use
-**Frontend can't reach API**: Verify proxy config in `client/vite.config.ts`
-**Permission denied on file operation**: Check file ownership in `.metadata.json`
-**RAID commands fail**: Ensure dev mode is active or run on Linux with mdadm
-**Tests fail**: Run `python -m pytest -v` to see detailed error messages
-**Import errors**: Ensure virtual environment is activated and dependencies installed
+**Backend won't compile**:
+- Ensure vcpkg is initialized: `git submodule update --init --recursive`
+- Install dependencies: `vcpkg install curl sqlite3 nlohmann-json spdlog gtest`
+
+**Frontend can't communicate with backend**:
+- Check if backend process is running
+- Verify IPC messages in logs
+- Ensure backend is in PATH when running via Electron
+
+**File watcher not detecting changes**:
+- Check file system permissions
+- Verify platform-specific implementation is compiled
+- Increase inotify watch limit on Linux: `echo 524288 | sudo tee /proc/sys/fs/inotify/max_user_watches`
+
+**Credential storage fails**:
+- Windows: Ensure Credential Manager service is running
+- macOS: Grant Keychain access in System Preferences
+- Linux: Install libsecret: `sudo apt install libsecret-1-dev`
+
+---
 
 ## Git Workflow
 
-- **Main branch**: `main` (production deployments)
-- **Development branch**: `development` (active development)
-- Features branch off from `development`, PRs merge to `main`
+- **Main branch**: `main` (stable releases)
+- **Development branch**: `develop` (active development)
+- Features branch off from `develop`, PRs merge to `main`
 
-## Production Deployment
+---
 
-### Systemd Services
-- `baluhost-backend.service` - FastAPI/Uvicorn (4 workers, port 8000)
-- `baluhost-frontend.service` - Optional (Nginx serves static files)
+## Documentation
 
-### Production Commands
-```bash
-# Start/Stop Services
-sudo systemctl start baluhost-backend
-sudo systemctl stop baluhost-backend
-sudo systemctl status baluhost-backend
+- `README.md` - Project overview, installation, usage
+- `ARCHITECTURE.md` - Detailed architecture documentation
+- `TODO.md` - Development roadmap and planned features
+- `docs/` - Technical implementation docs (network resilience, conflict resolution, etc.)
+- `backend/BUILD_GUIDE.md` - Detailed C++ build instructions
+- `frontend/README.md` - Frontend-specific documentation
 
-# View Logs
-sudo journalctl -u baluhost-backend -f
+---
 
-# Production Launcher (Alternative)
-python start_prod.py    # Start backend + optional frontend
-python kill_prod.py     # Stop all BaluHost processes
-```
+## Quick Reference: Finding Things
 
-### Configuration
-- **Environment**: `.env.production` (auto-generated secrets)
-- **Nginx**: `/etc/nginx/sites-available/baluhost`
-- **Database**: PostgreSQL on localhost:5432
+**Sync engine core**: `backend/src/sync/sync_engine.cpp`
+**File watcher**: `backend/src/sync/file_watcher*.cpp`
+**HTTP client**: `backend/src/api/http_client.cpp`
+**IPC server**: `backend/src/ipc/ipc_server.cpp`
+**Database layer**: `backend/src/db/database.cpp`
+**Credential storage**: `backend/src/utils/credential_store.cpp`
+
+**Frontend IPC client**: `frontend/src/renderer/lib/ipc-client.ts`
+**Dashboard page**: `frontend/src/renderer/pages/Dashboard.tsx`
+**Settings panel**: `frontend/src/renderer/components/SettingsPanel.tsx`
+**Sync folder management**: `frontend/src/renderer/pages/Sync.tsx`
+
+---
 
 ## Contact & Support
 
-- **Issues**: GitHub Issues (repository URL needed)
-- **Documentation**: See `docs/` directory
+- **GitHub**: https://github.com/Xveyn/BaluDesk
+- **Parent Project**: https://github.com/Xveyn/BaluHost
 - **Maintainer**: Xveyn
-- **Version**: 1.4.2 (as of Jan 2026)
+- **License**: MIT
+
+---
+
+## Related Projects
+
+- **BaluHost**: Main NAS backend and web UI - https://github.com/Xveyn/BaluHost
+- **BaluApp**: Android mobile app - https://github.com/Xveyn/BaluApp

@@ -1,557 +1,285 @@
+# BaluDesk - Desktop Sync Client
+
 <div align="center">
 
-# 🌐 BaluHost
+![BaluDesk Logo](https://via.placeholder.com/200x200/0ea5e9/ffffff?text=BaluDesk)
 
-**Modern Self-Hosted NAS Management Platform**
+**Modern Desktop Client for BaluHost NAS**
 
-[![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Node Version](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-teal.svg)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/React-18+-61dafb.svg)](https://react.dev/)
-[![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-
-*A powerful, user-friendly web interface for managing your Network Attached Storage (NAS) system*
-
-[Features](#-features) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Contributing](#-contributing)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue.svg)](https://github.com/Xveyn/BaluHost)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Planning-red.svg)](TODO.md)
 
 </div>
 
----
+## 🌟 Overview
 
-## 📖 About
+BaluDesk is a cross-platform desktop synchronization client for BaluHost NAS, providing seamless background file synchronization with a modern, intuitive GUI.
 
-BaluHost is a full-stack NAS management application built with modern web technologies. It provides comprehensive file management, RAID monitoring, system telemetry, and user access control - all through an intuitive web interface.
+### Key Features
 
-**Perfect for:**
-- 🏠 Home lab enthusiasts
-- 💼 Small office/home office (SOHO) setups
-- 🎓 Learning system administration
-- 🛠️ Self-hosted storage solutions
-
-### 🔐 Authentication & Security
-- JWT-based authentication with role-based access control (RBAC)
-- Admin and user roles with granular permissions
-- File ownership and access control
-- Comprehensive audit logging
-
-### 🏠 Home Network Integration (iCloud/OneDrive Alternative)
-- **Windows Service** - Auto-start on boot, runs in background
-- **Network Drive** - Mount as `Z:` drive via WebDAV on all devices
-- **Auto-Discovery** - mDNS/Bonjour finds servers automatically
-- **Desktop Sync Client** - Real-time folder synchronization
-- **Web Interface** - Access from any browser in your network
-- **Multi-Platform** - Windows, Mac, Linux, iOS, Android support
-
-### 📁 File Management
-- Drag & drop file upload
-- Multi-file/folder upload support
-- **File preview** - Images, videos, audio, PDFs, text files
-- **File sharing** - Public links with expiration & password protection
-- Create, rename, move, delete operations
-- Storage quota enforcement
-- File ownership tracking
-- Granular file permissions (per-user access control)
-
-### 💾 RAID Management
-- Real-time RAID array status monitoring
-- Disk health tracking with SMART data
-- Simulate degraded/rebuild scenarios (dev mode)
-- Production-ready mdadm integration
-- Support for RAID 0, 1, 5, 6, 10
-
-### 📊 System Monitoring
-- Live CPU, RAM, disk I/O, and network metrics
-- Historical telemetry data with charts (Recharts)
-- Process monitoring
-- SMART disk health status
-- Storage capacity tracking
-
-### 💾 Backup & Restore
-- Create full or incremental backups
-- Schedule automatic backups
-- Restore from backup with integrity verification
-- Backup compression and encryption support
-
-### 🔄 Sync System
-- Desktop sync client for real-time synchronization
-- Selective folder sync with conflict resolution
-- Multi-device support
-- Mobile camera backup (iOS/Android)
-- Network discovery via mDNS/Bonjour
-
-### 🎨 Modern UI/UX
-- Responsive design with Tailwind CSS
-- Real-time updates
-- Intuitive navigation
-- Dark-themed interface with glassmorphism effects
-- Settings page with user profile, security, storage, and activity logs
-- Fast loading with Vite HMR
-
-### ⚡ Power & Hardware Management (NEW)
-- **Power Management** - CPU frequency scaling (AMD Ryzen & Intel)
-- **Fan Control** - PWM control with custom temperature curves
-- **Energy Monitoring** - Tapo smart plug integration (P115/P110)
-- **Service Status** - Health monitoring dashboard for all services
-- **Admin Database** - Secure read-only database inspection
-
-### 📊 Advanced Monitoring (NEW)
-- **Per-thread CPU monitoring** - Task Manager-style display
-- **Monitoring Orchestrator** - Unified collector system
-- **Network Discovery** - mDNS/Bonjour auto-discovery
-- **Real-time metrics** - CPU, memory, disk I/O, network
-
-### 🗓️ Scheduler Dashboard (NEW)
-- **Unified Scheduler Management** - Control all 6 system schedulers
-- **Execution History** - Track runs with timing, status, and errors
-- **Run-Now Functionality** - Trigger any scheduler immediately
-- **Timeline View** - Visual execution history across all schedulers
-- **Retry Mechanism** - Re-run failed executions with one click
-
-### 🛠️ Developer-Friendly
-- **Dev Mode** - Full simulation environment (Windows-compatible!)
-- No database required for prototyping
-- Hot reload for both frontend and npmbackend
-- Comprehensive test suite (pytest)
-- Auto-generated API docs (Swagger/ReDoc)
-
-## 🚀 Production Status
-
-**✅ DEPLOYED** - January 25, 2026
-
-| Component | Status | Details |
-|-----------|--------|---------|
-| **Server** | ✅ Active | Debian 13, Ryzen 5 5600GT, 16GB RAM |
-| **Database** | ✅ PostgreSQL 17.7 | Production database with backup automation |
-| **Proxy** | ✅ Nginx | Port 80, rate limiting, security headers |
-| **Backend** | ✅ Systemd | 4 Uvicorn workers, auto-restart |
-| **Testing** | ✅ 364 Tests | 40+ test files, CI/CD active |
-| **Monitoring** | ✅ Ready | Prometheus/Grafana integration |
-
-### Documentation
-- 📈 [Production Readiness](PRODUCTION_READINESS.md) - Full status checklist
-- 📋 [Deployment Notes](PRODUCTION_DEPLOYMENT_NOTES.md) - Deployment details
-- 🚀 [Quick Start](PRODUCTION_QUICKSTART.md) - Getting started guide
+- 🔄 **Bidirectional Sync**: Real-time synchronization between local folders and BaluHost NAS
+- 📁 **Selective Sync**: Choose which folders to synchronize
+- 🎯 **Background Operation**: Runs in system tray with minimal resource usage
+- ⚡ **High Performance**: Multi-threaded C++ sync engine
+- 🔒 **Secure**: Encrypted credentials, HTTPS communication
+- 🎨 **Modern UI**: Electron-based interface with React + TypeScript
+- 🔔 **Smart Notifications**: Get notified about sync status and conflicts
+- ⚙️ **Configurable**: Bandwidth limits, sync intervals, conflict resolution strategies
 
 ---
 
-## Architecture
+## 🏗️ Architecture
 
-- **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, React Router
-- **Backend (active):** FastAPI (Python 3.11+), Pydantic, SQLAlchemy, `uvicorn`, background jobs for telemetry
-- **Database:** SQLite (dev) / PostgreSQL (production) with Alembic migrations
-- **Legacy Backend:** Express/TypeScript (located in `server/`, no longer actively developed)
-- **Start Script:** `python start_dev.py` boots FastAPI (Port 3001) and Vite Dev Server (Port 5173)
+```
+┌──────────────────────────────────────────┐
+│       Electron Frontend (React)          │
+│  • User Interface                        │
+│  • System Tray Integration               │
+│  • Settings Management                   │
+└──────────────┬───────────────────────────┘
+               │ IPC (JSON Messages)
+┌──────────────┴───────────────────────────┐
+│      C++ Backend (Sync Engine)           │
+│  • Filesystem Watcher                    │
+│  • HTTP Client (libcurl)                 │
+│  • SQLite Database                       │
+│  • Conflict Resolution                   │
+└──────────────┬───────────────────────────┘
+               │ REST API
+┌──────────────┴───────────────────────────┐
+│      BaluHost NAS (FastAPI)              │
+│  • File Storage                          │
+│  • User Management                       │
+│  • Sync Endpoints                        │
+└──────────────────────────────────────────┘
+```
 
-## API Overview (FastAPI)
+---
 
-- **Auth**
-   - `POST /api/auth/login`
-   - `POST /api/auth/logout`
-   - `GET /api/auth/me`
-- **Files**
-   - `GET /api/files/list?path=`
-   - `POST /api/files/upload`
-   - `GET /api/files/download?path=`
-   - `POST /api/files/folder`
-   - `PUT /api/files/rename`
-   - `PUT /api/files/move`
-   - `DELETE /api/files/{path}`
-   - `GET /api/files/permissions`
-   - `PUT /api/files/permissions`
-   - `GET /api/files/mountpoints`
-- **Shares**
-   - `GET /api/shares`
-   - `POST /api/shares`
-   - `GET /api/shares/{share_id}`
-   - `DELETE /api/shares/{share_id}`
-   - `GET /api/shares/public/{token}`
-- **Backups**
-   - `POST /api/backups`
-   - `GET /api/backups`
-   - `GET /api/backups/{backup_id}`
-   - `POST /api/backups/{backup_id}/restore`
-- **Sync**
-   - `GET /api/sync/folders`
-   - `POST /api/sync/folders`
-   - `GET /api/sync/conflicts`
-   - `POST /api/sync/conflicts/{conflict_id}/resolve`
-- **Mobile**
-   - `POST /api/mobile/token/generate`
-   - `POST /api/mobile/register`
-   - `GET /api/mobile/devices`
-   - `GET /api/mobile/camera/settings/{device_id}`
-- **Users (Admin)**
-   - `GET /api/users`
-   - `POST /api/users`
-   - `PUT /api/users/{id}`
-   - `DELETE /api/users/{id}`
-- **System & Monitoring**
-   - `GET /api/system/info`
-   - `GET /api/system/storage`
-   - `GET /api/system/quota`
-   - `GET /api/system/processes?limit=`
-   - `GET /api/system/telemetry/history`
-   - `GET /api/system/smart/status`
-   - `GET /api/system/raid/status`
-   - `POST /api/system/raid/degrade|rebuild|finalize` (Dev-Mode Simulation, Admin)
-   - `POST /api/system/raid/options` (Production/Dev configuration via mdadm or Simulator)
-- **Logging**
-   - `GET /api/logging/audit`
-   - `GET /api/logging/disk-io`
-   - `GET /api/logging/file-access`
-   - `GET /api/logging/stats`
-- **Schedulers** (NEW)
-   - `GET /api/schedulers`
-   - `GET /api/schedulers/{name}`
-   - `POST /api/schedulers/{name}/run-now`
-   - `GET /api/schedulers/{name}/history`
-   - `GET /api/schedulers/history/all`
+## 🚀 Quick Start
 
-## Setup
+### Prerequisites
 
-### 1. FastAPI Backend (recommended)
+- **Backend Build**: CMake 3.20+, C++17 Compiler, vcpkg dependencies
+- **Frontend Build**: Node.js 18+, npm 9+
+- **Runtime**: BaluHost NAS instance (v1.0+)
+
+### Development Mode
+
+```bash
+# Clone repository
+git clone https://github.com/Xveyn/BaluHost.git
+cd BaluHost/baludesk
+
+# Quick Start (starts both Frontend and Backend)
+python start.py
+
+# Or start components separately:
+python start.py --backend   # Only C++ Backend
+python start.py --frontend  # Only Electron Frontend
+```
+
+### Build from Source
+
+#### 1. Build C++ Backend
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+mkdir build && cd build
 
-# Development-Server
-uvicorn app.main:app --reload --port 3001
+# Configure with vcpkg
+cmake .. -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
 
-# Tests
-python -m pytest
+# Build
+cmake --build . --config Release
 ```
 
-### 2. Frontend
+#### 2. Install Frontend Dependencies
 
 ```bash
-cd client
+cd ../../frontend
 npm install
-npm run dev
-
-# Build/Test
-npm run build
 ```
 
-### 3. Combined Dev Start (Recommended)
+#### 3. Run Development
 
 ```bash
-python start_dev.py
+# From baludesk root
+python start.py
 ```
 
-This script sets `NAS_MODE=dev`, starts FastAPI on Port 3001 and the Vite server on Port 5173, and maintains a 2x5GB RAID1 sandbox under `backend/dev-storage`.
+The app will start with:
+- **Backend**: C++ Sync Engine on stdin/stdout IPC
+- **Frontend**: Electron app with Vite dev server (http://localhost:5173)
+- **Login**: Use your BaluHost credentials
 
-### 4. Production Deployment (Home Network)
-
-For using BaluHost as your personal cloud in your home network (like iCloud/OneDrive):
-
-```powershell
-# Install as Windows Service (requires Administrator)
-.\scripts\install_windows_service.ps1
-```
-
-This will:
-- ✅ Install BaluHost as a Windows Service with auto-start
-- ✅ Configure firewall rules for local network access
-- ✅ Set up WebDAV server for network drive mapping
-- ✅ Display your local IP for connecting other devices
-
-**📖 Full Home Network Setup Guide**: [docs/HEIMNETZ_SETUP.md](docs/HEIMNETZ_SETUP.md)
-
-**Access your private cloud:**
-- 🌐 Web Interface: `https://YOUR-PC-IP:5173` (frontend) / `https://YOUR-PC-IP:8000` (backend)
-- 💾 Network Drive: `\\YOUR-PC-IP@8080\webdav`
-- 📱 Desktop Sync Client: `client-desktop/sync_client_gui_v2.py`
-
-### 5. HTTPS Setup (mkcert for Trusted Certificates)
-
-BaluHost uses **mkcert** for locally-trusted HTTPS certificates (no browser warnings):
-
-**✅ Already installed** - Certificates in `dev-certs/` are valid until March 2028
-
-**For mobile devices** (one-time setup):
-```powershell
-# Export CA certificate for your phone/tablet
-.\scripts\export-ca-for-mobile.ps1
-```
-
-Then install the CA certificate on your mobile device:
-- **Android**: Settings → Security → Install certificate
-- **iOS**: Open file → Install Profile → Trust Certificate
-
-**📖 Full Mobile Setup Guide**: [docs/MKCERT_MOBILE_SETUP.md](docs/MKCERT_MOBILE_SETUP.md)
-
-### Legacy Express Backend (optional)
-
-The `server/` folder contains the former Express server. It is no longer actively used. If you still need to start it:
+### Production Build
 
 ```bash
-cd server
-npm install
-npm run dev
+cd frontend
+npm run build              # Creates production build
+npm run package            # Creates installers in dist-electron/
 ```
 
-The Express variant only offers basic endpoints without RAID/SMART/Quota features.
+---
 
-## Configuration
+## 📦 Installation
 
-### Backend `.env` (FastAPI)
+### Windows
+Download `BaluDesk-Setup-x.x.x.exe` from [Releases](https://github.com/Xveyn/BaluHost/releases)
 
-```env
-APP_NAME=Baluhost NAS API
-NAS_MODE=dev
-API_PREFIX=/api
-HOST=0.0.0.0
-PORT=3001
+### macOS
+Download `BaluDesk-x.x.x.dmg` from [Releases](https://github.com/Xveyn/BaluHost/releases)
 
-TOKEN_SECRET=change-me-in-prod
-TOKEN_EXPIRE_MINUTES=720
-
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=changeme
-ADMIN_EMAIL=admin@example.com
-
-NAS_STORAGE_PATH=./dev-storage
-NAS_TEMP_PATH=./dev-tmp
-NAS_QUOTA_BYTES=5368709120  # 5 GB (RAID1: 2x5GB physisch, 5GB effektiv)
-
-TELEMETRY_INTERVAL_SECONDS=3.0
-TELEMETRY_HISTORY_SIZE=60
-```
-
-> In production mode (`NAS_MODE=prod`), real system values are used. In Dev mode, FastAPI provides mock data and initializes the sandbox storage.
-
-### Frontend `.env`
-
-```env
-VITE_API_BASE_URL=http://localhost:3001
-```
-
-Alternatively, Vite uses the proxy from `client/vite.config.ts`, which automatically forwards `/api` and `/auth` to Port 3001.
-
-## Usage
-
-- Default login: Username `admin`, Password `changeme`
-- Change password after first login
-- RAID options only accessible with Admin token
-
-### Typical Dev Workflow
-
-1. `python start_dev.py`
-2. Open browser: `http://localhost:5173`
-3. Check dashboard (Quota, RAID, SMART)
-4. Tests: `cd backend && python -m pytest`, `cd client && npm run build`
-
-### 🗂️ Network Drive Access (Dev Mode)
-
-Access the Dev storage as a Windows network drive:
-
-```powershell
-# Automatically mount as drive Z:
-.\scripts\mount-dev-storage.ps1
-
-# Disconnect
-.\scripts\unmount-dev-storage.ps1
-```
-
-Now you can manage files via drag & drop in `Z:\` and they are automatically visible in the frontend!
-
-**Additional Options:**
-- With SMB (as in production): `.\scripts\mount-dev-storage.ps1 -UseSMB`
-- Different drive letter: `.\scripts\mount-dev-storage.ps1 -DriveLetter "Y:"`
-- Complete guide: [docs/NETWORK_DRIVE_QUICKSTART.md](docs/NETWORK_DRIVE_QUICKSTART.md)
-
-## Project Structure
-
-```
-baluhost/
-├── backend/          # FastAPI Backend (active code path)
-│   ├── app/
-│   │   ├── api/
-│   │   ├── services/
-│   │   ├── schemas/
-│   │   └── main.py
-│   ├── scripts/
-│   ├── dev-storage/
-│   └── tests/
-├── client/           # React Frontend
-│   ├── src/
-│   └── vite.config.ts
-├── server/           # Legacy Express Backend (deprecated)
-├── start_dev.py      # Dev orchestration
-└── README.md
-```
-
-## Express Legacy Migration
-
-- New features are exclusively implemented in the FastAPI backend.
-- The React frontend uses the FastAPI proxy (`/api`, `/auth`).
-- Deployment documentation should designate FastAPI as standard; Express remains only as an example or short-term comparison baseline.
-- As part of the migration, tests, docs, and CI are consolidated on the Python backend.
-
-## 📚 Documentation
-
-### Core Documentation
-- **[README.md](README.md)** - This file (project overview, quick start)
-- **[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)** - Complete feature documentation
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and design decisions
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** - How to contribute (code style, workflow)
-- **[TODO.md](TODO.md)** - Roadmap and planned features
-- **[SECURITY.md](SECURITY.md)** - Security policy and best practices
-- **[LICENSE](LICENSE)** - MIT License
-
-### User Documentation
-- **[User Guide](docs/USER_GUIDE.md)** - Complete user manual
-- **[API Reference](docs/API_REFERENCE.md)** - Full API documentation
-
-### Feature Documentation
-- [Audit Logging](docs/AUDIT_LOGGING.md) - Activity tracking system
-- [Disk I/O Monitor](docs/DISK_IO_MONITOR.md) - Real-time disk monitoring
-- [RAID Setup Wizard](docs/RAID_SETUP_WIZARD.md) - RAID configuration guide
-- [Network Drive Setup](docs/NETWORK_DRIVE_SETUP.md) - Mount as network drive
-- [Performance Analysis](docs/PERFORMANCE_ANALYSIS.md) - System optimization
-- [Telemetry Configuration](docs/TELEMETRY_CONFIG_RECOMMENDATIONS.md) - Monitoring setup
-
-### Auto-Generated API Documentation
-
-FastAPI provides interactive API documentation with custom BaluHost styling:
-- **Swagger UI:** http://localhost:3001/docs (Custom styled to match frontend)
-- **ReDoc:** http://localhost:3001/redoc
-
-### Documentation Structure
-
-```
-docs/
-├── USER_GUIDE.md           # End-user documentation
-├── API_REFERENCE.md        # Complete API reference
-├── AUDIT_LOGGING.md        # Audit system docs
-├── DISK_IO_MONITOR.md      # Disk monitoring
-├── RAID_SETUP_WIZARD.md    # RAID configuration
-├── NETWORK_DRIVE_SETUP.md  # Network drive mounting
-├── PERFORMANCE_ANALYSIS.md # Performance tuning
-└── TELEMETRY_CONFIG_RECOMMENDATIONS.md
-```
-
-## 🧪 Testing
-
-### Backend Tests
+### Linux
 ```bash
-cd backend
-python -m pytest                           # All tests
-python -m pytest tests/test_permissions.py # Specific test
-python -m pytest -v                        # Verbose output
+# AppImage (Universal)
+chmod +x BaluDesk-x.x.x.AppImage
+./BaluDesk-x.x.x.AppImage
+
+# Debian/Ubuntu
+sudo dpkg -i baludesk_x.x.x_amd64.deb
+
+# Fedora/RHEL
+sudo rpm -i baludesk-x.x.x.x86_64.rpm
 ```
 
-### Frontend Tests
-```bash
-cd client
-npm run test        # Unit Tests (TODO)
-npm run test:e2e    # E2E Tests (TODO)
-```
+---
 
-## TODO / Improvements
+## 🎯 Usage
 
-See **[TODO.md](TODO.md)** for the complete, prioritized list.
+### First Launch
 
-**Completed (v1.4.0):**
-- [x] PostgreSQL integration - Production deployed
-- [x] Upload progress UI with WebSocket/SSE
-- [x] Backup/Restore functionality
-- [x] File preview (Images, PDFs, Videos)
-- [x] Dark Mode (6 themes)
-- [x] Docker/Systemd deployment
-- [x] CI/CD Pipeline (3 workflows)
-- [x] Power Management & Fan Control
-- [x] Monitoring Orchestrator
+1. **Connect to NAS**
+   - Enter your BaluHost server URL (e.g., `https://nas.local:8000`)
+   - Login with your credentials
 
-**Pending:**
-- [ ] Email notifications
-- [ ] Internationalization (i18n)
-- [ ] PWA support
-- [ ] SSL/HTTPS (optional for internal network)
+2. **Add Sync Folder**
+   - Click "Add Folder" in the dashboard
+   - Select local folder
+   - Choose remote path on NAS
+   - Click "Start Sync"
+
+3. **Configure Settings** (Optional)
+   - Bandwidth limits
+   - Auto-start on boot
+   - Conflict resolution strategy
+
+### System Tray
+
+BaluDesk runs in the system tray with quick access:
+
+- 🟢 **Green**: All synced
+- 🔵 **Blue**: Syncing in progress
+- 🟡 **Yellow**: Conflict detected
+- 🔴 **Red**: Error occurred
+- ⚪ **Gray**: Paused
+
+**Right-click menu:**
+- Open BaluDesk
+- Pause/Resume Sync
+- Open Sync Folder
+- Settings
+- Quit
+
+---
+
+## 🛠️ Technology Stack
+
+### C++ Backend
+- **Build**: CMake 3.20+
+- **HTTP**: libcurl 8.5+
+- **Database**: SQLite 3.40+
+- **JSON**: nlohmann/json 3.11+
+- **Logging**: spdlog 1.12+
+- **Testing**: Google Test 1.14+
+
+### Electron Frontend
+- **Framework**: Electron 28
+- **UI**: React 18 + TypeScript 5
+- **Build**: Vite 5
+- **Styling**: Tailwind CSS 3
+- **State**: Zustand 4
+- **Packaging**: Electron Forge 7
+
+---
+
+## 🔒 Security
+
+- ✅ **Encrypted Credentials**: OS keychain integration (Windows Credential Manager, macOS Keychain, Linux libsecret)
+- ✅ **HTTPS Only**: TLS 1.2+ with certificate validation
+- ✅ **Secure IPC**: JSON schema validation, sandboxed renderer
+- ✅ **Code Signing**: Windows Authenticode, macOS Developer Certificate
+
+---
+
+## 📊 Performance
+
+- **Sync Speed**: Up to 100 MB/s (network dependent)
+- **Memory Usage**: ~50-150 MB (idle/active)
+- **CPU Usage**: <5% during sync
+- **Disk Usage**: Minimal (SQLite metadata only)
+
+---
+
+## 🐛 Known Issues
+
+See [GitHub Issues](https://github.com/Xveyn/BaluHost/issues?q=is%3Aissue+label%3Abaludesk)
+
+---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Code style guidelines
-- Development workflow
-- Pull request process
-- How to report bugs
+Contributions are welcome! Please read [CONTRIBUTING.md](../CONTRIBUTING.md) first.
 
-**Good First Issues:**
-- Add tests for existing features
-- Improve documentation
-- Fix UI/UX issues
-- Add file type support in preview
+### Development Setup
 
-## 📸 Screenshots
+```bash
+# Install dependencies
+cd baludesk/backend
+# Install C++ dependencies (system-specific)
 
-_(Coming soon - add screenshots here)_
+cd ../frontend
+npm install
 
-**Dashboard:**
-![Dashboard Screenshot](docs/images/dashboard.png)
+# Run in development mode
+npm run dev
+```
 
-**File Manager:**
-![File Manager Screenshot](docs/images/filemanager.png)
+---
 
-**RAID Management:**
-![RAID Management Screenshot](docs/images/raid.png)
+## 📚 Documentation
 
-## 🗺️ Roadmap
+- [TODO.md](TODO.md) - Development roadmap
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Technical architecture (coming soon)
+- [API.md](API.md) - IPC and REST API documentation (coming soon)
+- [BUILD.md](BUILD.md) - Build instructions (coming soon)
 
-See [TODO.md](TODO.md) for the complete roadmap.
+---
 
-**Recently Completed:**
-- ✅ File sharing with public links
-- ✅ Upload progress indicators
-- ✅ PostgreSQL production database
-- ✅ Dark mode (6 themes)
-- ✅ Settings page
-- ✅ Batch operations
-- ✅ Power & Fan Management
-- ✅ Energy Monitoring
+## 📝 License
 
-**Upcoming Features:**
-- 🔜 Email notifications
-- 🔜 Internationalization (i18n)
-- 🔜 PWA support
-- 🔜 Advanced search with full-text
+This project is licensed under the MIT License - see the [LICENSE](../LICENSE) file for details.
 
-## 📊 Project Stats
-
-- **Version:** 1.4.2
-- **Lines of Code:** ~25,000+
-- **Test Coverage:** 80%+ (backend, 364 test functions)
-- **API Endpoints:** 80+
-- **React Components:** 40+
-- **Database Tables:** 15+
-- **Backend Services:** 18+
+---
 
 ## 🙏 Acknowledgments
 
-- Built with [FastAPI](https://fastapi.tiangolo.com/)
-- Frontend powered by [React](https://react.dev/) and [Vite](https://vitejs.dev/)
-- UI styling with [Tailwind CSS](https://tailwindcss.com/)
-- Charts by [Recharts](https://recharts.org/)
-- Icons from [Heroicons](https://heroicons.com/)
+- **Inspiration**: Dropbox, Google Drive, Syncthing
+- **Technologies**: Electron, React, libcurl, SQLite
+- **Community**: BaluHost contributors
 
-## ⚖️ License
+---
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+## 📞 Support
 
-## 👨‍💻 Author
-
-Created by the BaluHost Team with ❤️ and [GitHub Copilot](https://github.com/features/copilot)
+- **Issues**: [GitHub Issues](https://github.com/Xveyn/BaluHost/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Xveyn/BaluHost/discussions)
+- **Email**: support@baluhost.com (coming soon)
 
 ---
 
 <div align="center">
-
-**⭐ Star this repo if you find it helpful!**
-
-[Report Bug](https://github.com/YOUR_USERNAME/BaluHost/issues) · [Request Feature](https://github.com/YOUR_USERNAME/BaluHost/issues) · [Discussions](https://github.com/YOUR_USERNAME/BaluHost/discussions)
-
+Made with ❤️ by the BaluHost Team
 </div>
