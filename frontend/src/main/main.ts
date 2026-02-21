@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, safeStorage, IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, safeStorage, shell, IpcMainInvokeEvent } from 'electron';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -322,13 +322,13 @@ ipcMain.handle('backend-command', async (_event: IpcMainInvokeEvent, command: an
     const id = requestId++;
     const commandWithId = { ...command, id };
 
-    // Timeout after 10 seconds
+    // M5: Increased timeout for sync operations that may take longer with large datasets
     const timeout = setTimeout(() => {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
         resolve({ error: 'Backend timeout' });
       }
-    }, 10000);
+    }, 30000);
 
     // Store resolver with timeout cleanup
     const wrappedResolve = (value: any) => {
@@ -344,29 +344,31 @@ ipcMain.handle('backend-command', async (_event: IpcMainInvokeEvent, command: an
 
 // IPC Message Handler for Remote Servers feature
 // This handles request/response of IPC messages with the backend
+// IMPORTANT: Uses the shared requestId counter to avoid ID collisions with backend-command handler
 ipcMain.handle('ipc-message', async (_event: IpcMainInvokeEvent, message: any) => {
   console.log('[IPC Main] Received message from renderer:', message);
-  
+
   if (!backendProcess) {
     console.error('[IPC Main] Backend not running');
-    return { 
+    return {
       error: 'Backend not running',
-      requestId: message.requestId 
+      requestId: message.requestId
     };
   }
 
   // Create a promise that resolves when the backend responds
   return new Promise((resolve) => {
-    const messageId = message.requestId;
+    const rendererRequestId = message.requestId;  // Original renderer ID merken
+    const id = requestId++;                        // Shared counter (wie backend-command)
 
     // Setup timeout
     const timeoutId = setTimeout(() => {
-      if (pendingRequests.has(messageId)) {
-        pendingRequests.delete(messageId);
-        console.error('[IPC Main] ❌ Request timeout:', messageId);
+      if (pendingRequests.has(id)) {
+        pendingRequests.delete(id);
+        console.error('[IPC Main] ❌ Request timeout:', id, '(renderer id:', rendererRequestId, ')');
         resolve({
           error: 'IPC request timeout',
-          requestId: messageId
+          requestId: rendererRequestId
         });
       }
     }, 30000); // 30 second timeout
@@ -375,21 +377,32 @@ ipcMain.handle('ipc-message', async (_event: IpcMainInvokeEvent, message: any) =
     const resolver = (response: any) => {
       clearTimeout(timeoutId);
       console.log('[IPC Main] Got response, resolving:', response);
-      // Make sure response has the requestId
-      const responseWithId = { ...response, requestId: messageId };
-      resolve(responseWithId);
+      // Restore the original renderer requestId so the renderer can match it
+      resolve({ ...response, requestId: rendererRequestId });
     };
 
-    pendingRequests.set(messageId, resolver);
+    pendingRequests.set(id, resolver);
 
-    // Send to backend
-    console.log('[IPC Main] Forwarding to backend:', message);
-    sendToBackend(message);
+    // Replace renderer requestId with our counter ID before sending to backend
+    const messageWithId = { ...message, requestId: id };
+    console.log('[IPC Main] Forwarding to backend with unified id:', id, '(renderer id:', rendererRequestId, ')');
+    sendToBackend(messageWithId);
   });
 });
 
 ipcMain.handle('get-app-version', () => {
   return app.getVersion();
+});
+
+// Open external URL handler (for device pairing verification URL)
+ipcMain.handle('shell:openExternal', async (_event: IpcMainInvokeEvent, url: string) => {
+  // Only allow http and https URLs for security
+  if (typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))) {
+    await shell.openExternal(url);
+  } else {
+    console.warn('[Shell] Blocked openExternal for non-http URL:', url);
+    throw new Error('Only http and https URLs are allowed');
+  }
 });
 
 // Dialog handlers

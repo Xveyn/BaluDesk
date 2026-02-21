@@ -3,7 +3,7 @@ export interface ElectronAPI {
   sendBackendCommand: (command: BackendCommand) => Promise<BackendResponse>;
   onBackendMessage: (callback: (message: BackendMessage) => void) => void;
   getAppVersion: () => Promise<string>;
-  removeBackendListener: () => void;
+  removeBackendListener: (callback?: (message: BackendMessage) => void) => void;
 }
 
 // Backend Communication Types

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Sync from './pages/Sync';
@@ -23,40 +24,58 @@ export default function App() {
   const [conflictCount, setConflictCount] = useState(0);
 
   useEffect(() => {
-    // Always require login on startup for security
-    // Clear any stored session to force authentication
-    localStorage.removeItem('baludesk_user');
-    setUser(null);
-    setLoading(false);
+    const checkAuth = async () => {
+      try {
+        const response = await window.electronAPI.sendBackendCommand({
+          type: 'check_stored_tokens',
+        });
+        if (response?.status === 'authenticated') {
+          setUser({
+            username: response.username || '',
+            serverUrl: response.serverUrl || '',
+          });
+        }
+      } catch {
+        // needs_pairing or error → user stays null → redirected to /login
+      } finally {
+        setLoading(false);
+      }
+    };
+    checkAuth();
   }, []);
 
-  // Listen to conflict updates
+  // Listen to backend events (conflicts + auth_required)
   useEffect(() => {
     const handleBackendMessage = (message: any) => {
       if (message.type === 'conflicts_updated') {
         setConflictCount(message.data?.conflicts?.length || 0);
       } else if (message.type === 'conflict_detected') {
         setConflictCount((prev) => prev + 1);
+      } else if (message.type === 'auth_required') {
+        // Token expired and refresh failed — force re-login
+        setUser(null);
+        toast.error('Session abgelaufen. Bitte erneut koppeln.');
       }
     };
 
-    if (user) {
-      window.electronAPI?.onBackendMessage(handleBackendMessage);
-    }
+    window.electronAPI?.onBackendMessage(handleBackendMessage);
 
     return () => {
-      window.electronAPI?.removeBackendListener?.();
+      window.electronAPI?.removeBackendListener?.(handleBackendMessage);
     };
-  }, [user]);
+  }, []);
 
   const handleLogin = (userData: User) => {
     setUser(userData);
-    // Don't persist to localStorage - require login on each startup
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await window.electronAPI.sendBackendCommand({ type: 'logout' });
+    } catch {
+      // Logout from UI regardless of backend response
+    }
     setUser(null);
-    localStorage.removeItem('baludesk_user');
   };
 
   if (loading) {

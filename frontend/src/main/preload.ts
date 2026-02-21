@@ -1,17 +1,26 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Single global listener — dispatches to all registered callbacks.
+// This prevents the bug where multiple ipcRenderer.on() calls accumulate
+// listeners, and removeAllListeners() wipes out listeners from other components.
+const backendMessageHandlers = new Set<(message: any) => void>();
+
+ipcRenderer.on('backend-message', (_event: any, message: any) => {
+  backendMessageHandlers.forEach(handler => handler(message));
+});
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
   // Send command to backend
   sendBackendCommand: (command: any) => ipcRenderer.invoke('backend-command', command),
-  
+
   // Convenient invoke method for direct backend communication
   invoke: (type: string, data: any) => ipcRenderer.invoke('backend-command', { type, data }),
-  
-  // Listen to backend messages
+
+  // Listen to backend messages — adds callback to handler set
   onBackendMessage: (callback: (message: any) => void) => {
-    ipcRenderer.on('backend-message', (_event, message) => callback(message));
+    backendMessageHandlers.add(callback);
   },
 
   // IPC message handling for Remote Servers - Uses invoke (request/response)
@@ -20,10 +29,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App info
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
 
-  // Remove listener
-  removeBackendListener: () => {
-    ipcRenderer.removeAllListeners('backend-message');
+  // Remove listener — pass specific callback to remove only that one,
+  // or omit to clear all (for backwards compatibility)
+  removeBackendListener: (callback?: (message: any) => void) => {
+    if (callback) {
+      backendMessageHandlers.delete(callback);
+    } else {
+      backendMessageHandlers.clear();
+    }
   },
+
+  // Open external URL in default browser
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
 
   // File system dialogs
   selectFile: () => ipcRenderer.invoke('dialog:openFile'),
@@ -59,7 +76,8 @@ export interface ElectronAPI {
   invoke: (type: string, data: any) => Promise<any>;
   onBackendMessage: (callback: (message: any) => void) => void;
   getAppVersion: () => Promise<string>;
-  removeBackendListener: () => void;
+  removeBackendListener: (callback?: (message: any) => void) => void;
+  openExternal: (url: string) => Promise<void>;
   selectFile: () => Promise<string | null>;
   selectFolder: (options?: any) => Promise<any>;
   selectSaveLocation: (defaultName: string) => Promise<string | null>;

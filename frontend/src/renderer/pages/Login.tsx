@@ -1,72 +1,76 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { ServerSelector } from '../components/Login/ServerSelector';
+import { DevicePairingScreen } from '../components/Login/DevicePairingScreen';
+import { useDevicePairing } from '../hooks/useDevicePairing';
 import type { RemoteServerProfile } from '../types/RemoteServerProfile';
 
 interface LoginProps {
   onLogin: (user: any) => void;
 }
 
+type ViewState = 'server-select' | 'pairing';
+
 export default function Login({ onLogin }: LoginProps) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [serverUrl, setServerUrl] = useState('https://localhost:8000');
+  const [serverUrl, setServerUrl] = useState('http://localhost');
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [useServerSelection, setUseServerSelection] = useState(true);
-  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<ViewState>('server-select');
+
+  const { state: pairingState, startPairing, cancelPairing } = useDevicePairing();
 
   const handleSelectProfile = (profile: RemoteServerProfile) => {
     setSelectedProfileId(profile.id);
-    // Build server URL from profile SSH host with BaluHost HTTP port (8000)
-    const url = `http://${profile.sshHost}:8000`;
+    const url = `http://${profile.sshHost}`;
     setServerUrl(url);
-    // Auto-fill username from profile if available
-    if (profile.sshUsername && !username) {
-      setUsername(profile.sshUsername);
-    }
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    
+  const handleConnect = () => {
     if (!serverUrl.trim()) {
-      toast.error('Please select or enter a server URL');
+      toast.error('Bitte Server-URL eingeben oder Server auswaehlen');
       return;
     }
-
-    setLoading(true);
-
-    try {
-      // Send login command to C++ backend via Electron IPC
-      const response = await window.electronAPI.sendBackendCommand({
-        type: 'login',
-        data: {
-          username,
-          password,
-          serverUrl,
-          profileId: selectedProfileId, // Pass selected profile ID if available
-        },
-      });
-
-      if (response.success) {
-        toast.success('Login successful!');
-        // Store user with profile selection
-        const userData = { 
-          username, 
-          serverUrl,
-          selectedProfileId, 
-        };
-        onLogin(userData);
-      } else {
-        toast.error(response.error || 'Login failed');
-      }
-    } catch (err: any) {
-      console.error('Login error:', err);
-      toast.error(err.message || 'Failed to connect to backend');
-    } finally {
-      setLoading(false);
-    }
+    setView('pairing');
+    startPairing(serverUrl);
   };
+
+  const handleCancel = () => {
+    cancelPairing();
+    setView('server-select');
+  };
+
+  const handleRetry = () => {
+    startPairing(serverUrl);
+  };
+
+  // When pairing is approved, notify parent
+  useEffect(() => {
+    if (pairingState.phase === 'approved') {
+      // Small delay to show success animation
+      const timer = setTimeout(async () => {
+        // Fetch the stored token info from the backend to get username
+        try {
+          const response = await window.electronAPI.sendBackendCommand({
+            type: 'check_stored_tokens',
+          });
+          const username = response?.username || '';
+          onLogin({
+            username,
+            serverUrl,
+            selectedProfileId,
+          });
+          toast.success('Erfolgreich verbunden!');
+        } catch {
+          onLogin({
+            username: '',
+            serverUrl,
+            selectedProfileId,
+          });
+        }
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, [pairingState.phase, serverUrl, selectedProfileId, onLogin]);
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden text-slate-100">
@@ -103,19 +107,19 @@ export default function Login({ onLogin }: LoginProps) {
             <p className="mt-2 text-sm text-slate-400">Desktop Sync Client</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="mt-8 sm:mt-10 space-y-4 sm:space-y-5">
-            {/* Server Selection Mode Toggle */}
-            {useServerSelection ? (
-              <ServerSelector
-                selectedProfileId={selectedProfileId}
-                onSelectProfile={handleSelectProfile}
-                onManualMode={() => {
-                  setUseServerSelection(false);
-                  setSelectedProfileId(null);
-                }}
-              />
-            ) : (
-              <>
+          {view === 'server-select' ? (
+            <div className="mt-8 sm:mt-10 space-y-4 sm:space-y-5">
+              {/* Server Selection */}
+              {useServerSelection ? (
+                <ServerSelector
+                  selectedProfileId={selectedProfileId}
+                  onSelectProfile={handleSelectProfile}
+                  onManualMode={() => {
+                    setUseServerSelection(false);
+                    setSelectedProfileId(null);
+                  }}
+                />
+              ) : (
                 <div className="space-y-2">
                   <label
                     htmlFor="serverUrl"
@@ -129,72 +133,34 @@ export default function Login({ onLogin }: LoginProps) {
                     className="input"
                     value={serverUrl}
                     onChange={(e) => setServerUrl(e.target.value)}
-                    placeholder="https://localhost:8000"
-                    required
+                    placeholder="http://192.168.1.100"
                   />
                   <button
                     type="button"
                     onClick={() => setUseServerSelection(true)}
                     className="text-xs text-slate-400 hover:text-slate-300"
                   >
-                    Or select from saved servers
+                    Oder gespeicherten Server waehlen
                   </button>
                 </div>
-              </>
-            )}
+              )}
 
-            <div className="space-y-2">
-              <label
-                htmlFor="username"
-                className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400"
+              <button
+                onClick={handleConnect}
+                className="btn btn-primary w-full mt-5 sm:mt-6 touch-manipulation active:scale-[0.98]"
               >
-                Username
-              </label>
-              <input
-                type="text"
-                id="username"
-                className="input"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
-                required
+                Verbinden
+              </button>
+            </div>
+          ) : (
+            <div className="mt-8 sm:mt-10">
+              <DevicePairingScreen
+                state={pairingState}
+                onCancel={handleCancel}
+                onRetry={handleRetry}
               />
             </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
-                <label htmlFor="password">Password</label>
-                <span className="hidden sm:inline normal-case tracking-normal">
-                  Secure Connection
-                </span>
-              </div>
-              <input
-                type="password"
-                id="password"
-                className="input"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="btn btn-primary w-full mt-5 sm:mt-6 touch-manipulation active:scale-[0.98]"
-              disabled={loading}
-            >
-              {loading ? 'Connecting...' : 'Connect & Sync'}
-            </button>
-          </form>
-
-          <div className="mt-6 sm:mt-8 rounded-xl border border-slate-800 bg-slate-950/70 p-3 sm:p-4 text-center text-xs text-slate-400">
-            <p className="mb-1">Default credentials:</p>
-            <p>
-              <span className="text-slate-300">admin</span> /{' '}
-              <span className="text-slate-300">changeme</span>
-            </p>
-          </div>
+          )}
 
           <div className="mt-4 sm:mt-6 text-center text-[10px] sm:text-[11px] uppercase tracking-[0.3em] sm:tracking-[0.35em] text-slate-500">
             Desktop Client v1.0.0 - Status{' '}

@@ -30,33 +30,15 @@ const UserProfile: React.FC<UserProfileProps> = ({
     text: string;
   } | null>(null);
 
-  // Fetch full user profile from backend
+  // Sync profile from props
   useEffect(() => {
-    const fetchUserProfile = async () => {
-      if (!user?.id) return;
-      
-      try {
-        const token = sessionStorage.getItem('auth_token');
-        const response = await fetch(`${serverUrl}/api/users/${user.id}`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setProfile(data);
-          if (data.avatar_url) {
-            setAvatarPreview(`${serverUrl}${data.avatar_url}`);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch user profile:', error);
+    if (user) {
+      setProfile(user);
+      if (user.avatar_url) {
+        setAvatarPreview(`${serverUrl}${user.avatar_url}`);
       }
-    };
-
-    fetchUserProfile();
-  }, [user?.id, serverUrl]);
+    }
+  }, [user, serverUrl]);
 
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -92,15 +74,14 @@ const UserProfile: React.FC<UserProfileProps> = ({
       const formData = new FormData();
       formData.append('avatar', avatarFile);
 
-      const token = sessionStorage.getItem('auth_token');
+      // Avatar upload uses the server's API directly.
+      // Auth token is managed by the C++ backend; for direct uploads
+      // the server may accept session cookies or the endpoint may not require auth.
       const response = await fetch(
         `${serverUrl}/api/users/${profile.id}/avatar`,
         {
           method: 'POST',
           body: formData,
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
         }
       );
 

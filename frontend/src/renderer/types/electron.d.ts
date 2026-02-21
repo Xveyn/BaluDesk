@@ -15,7 +15,7 @@ export interface ElectronAPI {
   sendBackendCommand: (command: any) => Promise<any>;
   invoke: (type: string, data: any) => Promise<any>;
   onBackendMessage: (callback: (message: any) => void) => void;
-  removeBackendListener: () => void;
+  removeBackendListener: (callback?: (message: any) => void) => void;
   
   // IPC message handling for Remote Servers
   sendIPCMessage: (message: any) => Promise<any>;
