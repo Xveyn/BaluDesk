@@ -2,6 +2,7 @@
 #include "../sync/sync_engine.h"
 #include "../utils/logger.h"
 #include "../utils/system_info.h"
+#include "../utils/settings_manager.h"
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <sstream>
@@ -41,6 +42,11 @@ bool IpcServer::start() {
         });
     }
 
+    // Register auth-required callback to broadcast event when token refresh fails
+    engine_->setAuthRequiredCallback([this]() {
+        broadcastEvent("auth_required", {{"reason", "token_expired"}});
+    });
+
     return true;
 }
 
@@ -73,8 +79,17 @@ void IpcServer::processMessages() {
             if (type == "ping") {
                 handlePing(requestId);
             }
-            else if (type == "login") {
-                handleLogin(message, requestId);
+            else if (type == "set_tokens") {
+                handleSetTokens(message, requestId);
+            }
+            else if (type == "check_stored_tokens") {
+                handleCheckStoredTokens(requestId);
+            }
+            else if (type == "logout") {
+                handleLogout(requestId);
+            }
+            else if (type == "get_device_info") {
+                handleGetDeviceInfo(requestId);
             }
             else if (type == "add_sync_folder") {
                 handleAddSyncFolder(message, requestId);
@@ -119,48 +134,115 @@ void IpcServer::handlePing(int requestId) {
     sendResponse(response, requestId);
 }
 
-void IpcServer::handleLogin(const json& message, int requestId) {
+void IpcServer::handleSetTokens(const json& message, int requestId) {
     try {
         if (!message.contains("data")) {
             sendError("Missing data", requestId);
             return;
         }
-        
+
         auto data = message["data"];
-        std::string username = data.value("username", "");
-        std::string password = data.value("password", "");
         std::string serverUrl = data.value("serverUrl", "");
-        
-        if (username.empty() || password.empty() || serverUrl.empty()) {
-            sendError("Username, password and serverUrl required", requestId);
+        std::string accessToken = data.value("accessToken", "");
+        std::string refreshToken = data.value("refreshToken", "");
+        std::string username = data.value("username", "");
+
+        if (serverUrl.empty() || accessToken.empty() || refreshToken.empty() || username.empty()) {
+            sendError("serverUrl, accessToken, refreshToken and username required", requestId);
             return;
         }
-        
-        Logger::info("Login attempt: {} @ {}", username, serverUrl);
-        
-        // Note: SyncEngine currently doesn't support serverUrl parameter
-        // TODO: Update SyncEngine::login() to accept serverUrl
-        bool success = engine_->login(username, password);
-        
+
+        Logger::info("Setting tokens for user: {} @ {}", username, serverUrl);
+
+        bool success = engine_->setTokens(serverUrl, accessToken, refreshToken, username);
+
         if (success) {
+            currentUsername_ = username;
             json response = {
                 {"success", true},
-                {"token", "mock-token-" + username}, // TODO: Get real token from engine
-                {"user", {
-                    {"username", username},
-                    {"id", 1}
-                }}
+                {"type", "tokens_set"}
             };
             sendResponse(response, requestId);
-            Logger::info("Login successful for user: {}", username);
+            Logger::info("Tokens set successfully for user: {}", username);
         } else {
-            sendError("Login failed: Invalid credentials or server unreachable", requestId);
-            Logger::warn("Login failed for user: {}", username);
+            sendError("Failed to set tokens", requestId);
         }
-        
+
     } catch (const std::exception& e) {
-        sendError(std::string("Login error: ") + e.what(), requestId);
-        Logger::error("Login exception: {}", e.what());
+        sendError(std::string("Set tokens error: ") + e.what(), requestId);
+        Logger::error("Set tokens exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleCheckStoredTokens(int requestId) {
+    try {
+        std::string status = engine_->checkStoredTokens();
+
+        json response = {
+            {"type", "stored_tokens_status"},
+            {"success", true},
+            {"status", status}
+        };
+
+        if (status == "authenticated") {
+            response["username"] = engine_->getStoredUsername();
+            response["serverUrl"] = engine_->getStoredServerUrl();
+            currentUsername_ = engine_->getStoredUsername();
+        }
+
+        sendResponse(response, requestId);
+        Logger::info("Stored tokens check result: {}", status);
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Check stored tokens error: ") + e.what(), requestId);
+        Logger::error("Check stored tokens exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleLogout(int requestId) {
+    try {
+        engine_->logout();
+        currentUsername_.clear();
+
+        json response = {
+            {"type", "logged_out"},
+            {"success", true}
+        };
+        sendResponse(response, requestId);
+        Logger::info("Logout successful");
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Logout error: ") + e.what(), requestId);
+        Logger::error("Logout exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleGetDeviceInfo(int requestId) {
+    try {
+        auto& settings = SettingsManager::getInstance();
+
+        json response = {
+            {"type", "device_info"},
+            {"success", true},
+            {"data", {
+                {"deviceId", settings.getDeviceId()},
+                {"deviceName", settings.getDeviceName()},
+#ifdef _WIN32
+                {"platform", "windows"},
+#elif __APPLE__
+                {"platform", "macos"},
+#elif __linux__
+                {"platform", "linux"},
+#else
+                {"platform", "unknown"},
+#endif
+            }}
+        };
+        sendResponse(response, requestId);
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Get device info error: ") + e.what(), requestId);
+        Logger::error("Get device info exception: {}", e.what());
     }
 }
 

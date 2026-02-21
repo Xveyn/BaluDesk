@@ -11,6 +11,7 @@
 #include "../utils/mock_data_provider.h"
 #include "../api/http_client.h"
 #include "../baluhost_client.h"
+#include "../utils/credential_store.h"
 #include <nlohmann/json.hpp>
 #include <curl/curl.h>
 #include <iostream>
@@ -21,8 +22,19 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <thread>
 
 using json = nlohmann::json;
+
+// Null-safe replacement for json::value() — handles JSON null values gracefully.
+// nlohmann's .value("key", default) throws when the key exists but is null.
+template<typename T>
+T safe_value(const nlohmann::json& j, const std::string& key, const T& default_val) {
+    if (j.contains(key) && !j[key].is_null()) {
+        return j[key].get<T>();
+    }
+    return default_val;
+}
 
 namespace baludesk {
 
@@ -32,9 +44,31 @@ static size_t HealthCheckWriteCallback(void* contents, size_t size, size_t nmemb
     return size * nmemb;
 }
 
+// Helper: string → SyncDirection
+static SyncDirection directionFromString(const std::string& s) {
+    if (s == "push") return SyncDirection::PUSH;
+    if (s == "pull") return SyncDirection::PULL;
+    return SyncDirection::BIDIRECTIONAL;
+}
+
+// Helper: SyncDirection → string
+static std::string directionToString(SyncDirection d) {
+    switch (d) {
+        case SyncDirection::PUSH: return "push";
+        case SyncDirection::PULL: return "pull";
+        default: return "bidirectional";
+    }
+}
+
 IpcServer::IpcServer(SyncEngine* engine) : engine_(engine) {}
 
-IpcServer::~IpcServer() {}
+IpcServer::~IpcServer() {
+    // C4: Join async sync thread on destruction to prevent crashes
+    std::lock_guard<std::mutex> lock(asyncSyncMutex_);
+    if (asyncSyncThread_.joinable()) {
+        asyncSyncThread_.join();
+    }
+}
 
 bool IpcServer::start() {
     Logger::info("IPC Server started, listening on stdin");
@@ -59,13 +93,38 @@ bool IpcServer::start() {
                     {"downloadSpeed", state.downloadSpeed},
                     {"pendingUploads", state.pendingUploads},
                     {"pendingDownloads", state.pendingDownloads},
-                    {"lastSync", state.lastSync}
+                    {"lastSync", state.lastSync},
+                    {"currentFile", state.currentFile},
+                    {"totalFiles", state.totalFiles},
+                    {"processedFiles", state.processedFiles},
+                    {"currentFileSize", state.currentFileSize},
+                    {"currentFileTransferred", state.currentFileTransferred},
+                    {"currentFilePercent", state.currentFilePercent}
                 };
+
+                // Include syncFolderCount via lightweight DB query (no filesystem scan)
+                try {
+                    auto* db = engine_->getDatabase();
+                    if (db) {
+                        auto folders = db->getSyncFolders();
+                        data["syncFolderCount"] = static_cast<int>(folders.size());
+                    }
+                } catch (...) {}
 
                 broadcastEvent("sync_state_update", data);
             } catch (const std::exception& e) {
                 Logger::error("Failed to broadcast sync state: {}", e.what());
             }
+        });
+
+        // Register auth-required callback to broadcast event when token refresh fails
+        engine_->setAuthRequiredCallback([this]() {
+            broadcastEvent("auth_required", {{"reason", "token_expired"}});
+        });
+
+        // Register error callback to broadcast sync errors to frontend
+        engine_->setErrorCallback([this](const std::string& errorMsg) {
+            broadcastEvent("sync_error", {{"message", errorMsg}});
         });
     }
 
@@ -114,6 +173,24 @@ void IpcServer::processMessages() {
             else if (type == "login") {
                 handleLogin(message, requestId);
             }
+            else if (type == "set_tokens") {
+                handleSetTokens(message, requestId);
+            }
+            else if (type == "check_stored_tokens") {
+                handleCheckStoredTokens(requestId);
+            }
+            else if (type == "logout") {
+                handleLogout(requestId);
+            }
+            else if (type == "get_device_info") {
+                handleGetDeviceInfo(requestId);
+            }
+            else if (type == "request_device_code") {
+                handleRequestDeviceCode(message, requestId);
+            }
+            else if (type == "poll_device_code") {
+                handlePollDeviceCode(message, requestId);
+            }
             else if (type == "add_sync_folder") {
                 handleAddSyncFolder(message, requestId);
             }
@@ -126,8 +203,14 @@ void IpcServer::processMessages() {
             else if (type == "resume_sync") {
                 handleResumeSync(message, requestId);
             }
+            else if (type == "trigger_sync") {
+                handleTriggerSync(message, requestId);
+            }
             else if (type == "get_sync_state") {
                 handleGetSyncState(requestId);
+            }
+            else if (type == "update_sync_folder") {
+                handleUpdateSyncFolder(message, requestId);
             }
             else if (type == "get_folders") {
                 handleGetFolders(requestId);
@@ -239,6 +322,12 @@ void IpcServer::processMessages() {
             }
             else if (type == "check_server_health") {
                 handleCheckServerHealth(message, requestId);
+            }
+            else if (type == "list_remote_folders") {
+                handleListRemoteFolders(message, requestId);
+            }
+            else if (type == "get_activity_logs") {
+                handleGetActivityLogs(message, requestId);
             }
             else {
                 Logger::warn("Unknown IPC message type: {}", type);
@@ -359,8 +448,332 @@ void IpcServer::handleLogin(const json& message, int requestId) {
     }
 }
 
+void IpcServer::handleSetTokens(const json& message, int requestId) {
+    try {
+        if (!message.contains("data")) {
+            sendError("Missing data", requestId);
+            return;
+        }
+
+        auto data = message["data"];
+        std::string serverUrl = data.value("serverUrl", "");
+        std::string accessToken = data.value("accessToken", "");
+        std::string refreshToken = data.value("refreshToken", "");
+        std::string username = data.value("username", "");
+
+        if (serverUrl.empty() || accessToken.empty() || refreshToken.empty() || username.empty()) {
+            sendError("serverUrl, accessToken, refreshToken and username required", requestId);
+            return;
+        }
+
+        Logger::info("Setting tokens for user: {} @ {}", username, serverUrl);
+
+        // Check if user changed - clear old profiles if so
+        if (!currentUsername_.empty() && currentUsername_ != username) {
+            auto db = engine_->getDatabase();
+            if (db) {
+                Logger::info("User changed from {} to {} - clearing old profiles", currentUsername_, username);
+                db->clearAllRemoteServerProfiles();
+            }
+        }
+
+        // Update current username and save to file
+        currentUsername_ = username;
+        Logger::info("Updated currentUsername_ to '{}'", currentUsername_);
+
+        std::ofstream userFile("current_user.txt");
+        if (userFile.is_open()) {
+            userFile << username;
+            userFile.close();
+            Logger::info("Saved current user '{}' to file", username);
+        } else {
+            Logger::warn("Failed to open current_user.txt for writing");
+        }
+
+        // Initialize BaluHost client with direct token (no login needed)
+        baluhostClient_ = std::make_unique<BaluhostClient>(serverUrl);
+        baluhostClient_->setAuthToken(accessToken);
+
+        // Store tokens in SyncEngine (saves to Keychain + sets HttpClient auth)
+        bool success = engine_->setTokens(serverUrl, accessToken, refreshToken, username);
+
+        if (success) {
+            json response = {
+                {"success", true},
+                {"type", "tokens_set"}
+            };
+            sendResponse(response, requestId);
+            Logger::info("Tokens set successfully for user: {}", username);
+        } else {
+            sendError("Failed to set tokens", requestId);
+        }
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Set tokens error: ") + e.what(), requestId);
+        Logger::error("Set tokens exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleCheckStoredTokens(int requestId) {
+    try {
+        std::string status = engine_->checkStoredTokens();
+
+        json response = {
+            {"type", "stored_tokens_status"},
+            {"success", true},
+            {"status", status}
+        };
+
+        if (status == "authenticated") {
+            std::string username = engine_->getStoredUsername();
+            std::string serverUrl = engine_->getStoredServerUrl();
+            response["username"] = username;
+            response["serverUrl"] = serverUrl;
+            currentUsername_ = username;
+
+            // Initialize BaluHost client so file operations work after auto-login
+            if (!serverUrl.empty()) {
+                baluhostClient_ = std::make_unique<BaluhostClient>(serverUrl);
+                // Load stored access token from credential store and set it
+                std::string accessToken = CredentialStore::loadToken("access_token");
+                if (!accessToken.empty()) {
+                    baluhostClient_->setAuthToken(accessToken);
+                    Logger::info("BaluhostClient initialized after auto-login for user: {}", username);
+                }
+            }
+        }
+
+        sendResponse(response, requestId);
+        Logger::info("Stored tokens check result: {}", status);
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Check stored tokens error: ") + e.what(), requestId);
+        Logger::error("Check stored tokens exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleLogout(int requestId) {
+    try {
+        engine_->logout();
+        currentUsername_.clear();
+        baluhostClient_.reset();
+
+        // Clear persisted user file
+        std::ofstream userFile("current_user.txt", std::ios::trunc);
+        if (userFile.is_open()) {
+            userFile.close();
+        }
+
+        json response = {
+            {"type", "logged_out"},
+            {"success", true}
+        };
+        sendResponse(response, requestId);
+        Logger::info("Logout successful");
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Logout error: ") + e.what(), requestId);
+        Logger::error("Logout exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleGetDeviceInfo(int requestId) {
+    try {
+        auto& settings = SettingsManager::getInstance();
+
+        json response = {
+            {"type", "device_info"},
+            {"success", true},
+            {"data", {
+                {"deviceId", settings.getDeviceId()},
+                {"deviceName", settings.getDeviceName()},
+#ifdef _WIN32
+                {"platform", "windows"},
+#elif __APPLE__
+                {"platform", "mac"},
+#elif __linux__
+                {"platform", "linux"},
+#else
+                {"platform", "unknown"},
+#endif
+            }}
+        };
+        sendResponse(response, requestId);
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Get device info error: ") + e.what(), requestId);
+        Logger::error("Get device info exception: {}", e.what());
+    }
+}
+
+void IpcServer::handleRequestDeviceCode(const json& message, int requestId) {
+    try {
+        if (!message.contains("data")) {
+            sendError("Missing data", requestId);
+            return;
+        }
+
+        auto data = message["data"];
+        std::string serverUrl = data.value("serverUrl", "");
+        std::string deviceId = data.value("deviceId", "");
+        std::string deviceName = data.value("deviceName", "BaluDesk");
+        std::string platform = data.value("platform", "unknown");
+
+        if (serverUrl.empty()) {
+            sendError("serverUrl required", requestId);
+            return;
+        }
+
+        Logger::info("Requesting device code from: {}", serverUrl);
+
+        // Build request body
+        json requestBody = {
+            {"device_id", deviceId},
+            {"device_name", deviceName},
+            {"platform", platform}
+        };
+        std::string bodyStr = requestBody.dump();
+
+        // POST to server via curl
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            sendError("Failed to initialize CURL", requestId);
+            return;
+        }
+
+        std::string url = serverUrl + "/api/desktop-pairing/device-code";
+        std::string responseBuffer;
+
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, HealthCheckWriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+        CURLcode res = curl_easy_perform(curl);
+        long httpCode = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            sendError(std::string("Connection failed to ") + url + ": " + curl_easy_strerror(res), requestId);
+            return;
+        }
+
+        if (httpCode < 200 || httpCode >= 300) {
+            sendError("Server " + url + " returned HTTP " + std::to_string(httpCode) + ": " + responseBuffer, requestId);
+            return;
+        }
+
+        // Parse and forward server response
+        auto serverResponse = json::parse(responseBuffer);
+        json response = {
+            {"success", true},
+            {"data", serverResponse}
+        };
+        sendResponse(response, requestId);
+        Logger::info("Device code received successfully");
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Request device code error: ") + e.what(), requestId);
+        Logger::error("Request device code exception: {}", e.what());
+    }
+}
+
+void IpcServer::handlePollDeviceCode(const json& message, int requestId) {
+    try {
+        if (!message.contains("data")) {
+            sendError("Missing data", requestId);
+            return;
+        }
+
+        auto data = message["data"];
+        std::string serverUrl = data.value("serverUrl", "");
+        std::string deviceCode = data.value("deviceCode", "");
+
+        if (serverUrl.empty() || deviceCode.empty()) {
+            sendError("serverUrl and deviceCode required", requestId);
+            return;
+        }
+
+        // Build request body
+        json requestBody = {{"device_code", deviceCode}};
+        std::string bodyStr = requestBody.dump();
+
+        // POST to server via curl
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            sendError("Failed to initialize CURL", requestId);
+            return;
+        }
+
+        std::string url = serverUrl + "/api/desktop-pairing/poll";
+        std::string responseBuffer;
+
+        struct curl_slist* headers = nullptr;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, bodyStr.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, HealthCheckWriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &responseBuffer);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+        CURLcode res = curl_easy_perform(curl);
+        long httpCode = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            sendError(std::string("Poll connection failed to ") + url + ": " + curl_easy_strerror(res), requestId);
+            return;
+        }
+
+        if (httpCode == 404) {
+            // Device code expired/not found
+            json response = {
+                {"success", true},
+                {"data", {{"status", "expired"}}}
+            };
+            sendResponse(response, requestId);
+            return;
+        }
+
+        if (httpCode < 200 || httpCode >= 300) {
+            sendError("Server returned HTTP " + std::to_string(httpCode), requestId);
+            return;
+        }
+
+        // Parse and forward server response
+        auto serverResponse = json::parse(responseBuffer);
+        json response = {
+            {"success", true},
+            {"data", serverResponse}
+        };
+        sendResponse(response, requestId);
+
+    } catch (const std::exception& e) {
+        sendError(std::string("Poll device code error: ") + e.what(), requestId);
+        Logger::error("Poll device code exception: {}", e.what());
+    }
+}
+
 void IpcServer::handleAddSyncFolder(const json& message, int requestId) {
-    (void)requestId;
     try {
         if (!message.contains("payload")) {
             sendError("Missing payload", requestId);
@@ -376,6 +789,9 @@ void IpcServer::handleAddSyncFolder(const json& message, int requestId) {
             return;
         }
 
+        // Read optional sync direction
+        std::string syncDir = payload.value("sync_direction", "bidirectional");
+
         // Add folder via sync engine
         SyncFolder folder;
         folder.id = ""; // Will be generated by engine
@@ -383,6 +799,7 @@ void IpcServer::handleAddSyncFolder(const json& message, int requestId) {
         folder.remotePath = remotePath;
         folder.enabled = true;
         folder.status = SyncStatus::IDLE;
+        folder.direction = directionFromString(syncDir);
 
         bool success = engine_->addSyncFolder(folder);
 
@@ -472,6 +889,47 @@ void IpcServer::handleResumeSync(const json& message, int requestId) {
     }
 }
 
+void IpcServer::handleTriggerSync(const json& message, int requestId) {
+    try {
+        std::string folderId;
+        if (message.contains("payload") && message["payload"].contains("folder_id")) {
+            folderId = message["payload"]["folder_id"].get<std::string>();
+        }
+
+        Logger::info("Triggering sync{}", folderId.empty() ? " for all folders" : " for folder: " + folderId);
+
+        // Send response immediately — sync runs asynchronously
+        json response = {
+            {"type", "sync_triggered"},
+            {"success", true},
+            {"folder_id", folderId}
+        };
+        sendResponse(response, requestId);
+
+        // C4: Run sync in a managed thread (joined in destructor) instead of detaching
+        if (engine_) {
+            std::lock_guard<std::mutex> syncLock(asyncSyncMutex_);
+            // Join previous sync thread if it finished
+            if (asyncSyncThread_.joinable()) {
+                asyncSyncThread_.join();
+            }
+            asyncSyncThread_ = std::thread([engine = engine_, folderId]() {
+                try {
+                    engine->triggerSync(folderId);
+                } catch (const std::exception& e) {
+                    Logger::error("Async triggerSync failed: {}", e.what());
+                } catch (...) {
+                    Logger::error("Async triggerSync failed with unknown exception");
+                }
+            });
+        }
+
+    } catch (const std::exception& e) {
+        Logger::error("handleTriggerSync error: {}", e.what());
+        sendError(e.what(), requestId);
+    }
+}
+
 void IpcServer::handleUpdateSyncFolder(const json& message, int requestId) {
     try {
         if (!message.contains("payload") || !message["payload"].contains("folder_id")) {
@@ -479,23 +937,24 @@ void IpcServer::handleUpdateSyncFolder(const json& message, int requestId) {
             return;
         }
 
-        std::string folderId = message["payload"]["folder_id"];
-        
-        // Get conflict resolution setting if provided
-        std::string conflictResolution = "ask"; // Default
-        if (message["payload"].contains("conflict_resolution")) {
-            conflictResolution = message["payload"]["conflict_resolution"];
-        }
+        auto payload = message["payload"];
+        std::string folderId = payload["folder_id"];
 
-        // Update the folder settings in the sync engine
-        // This would typically store the settings in a database
-        engine_->updateSyncFolderSettings(folderId, conflictResolution);
+        // Read sync direction (default: keep current or bidirectional)
+        std::string syncDirStr = payload.value("sync_direction", "bidirectional");
+        SyncDirection direction = directionFromString(syncDirStr);
+
+        // Read conflict resolution (default: ask)
+        std::string conflictResolution = payload.value("conflict_resolution", "ask");
+
+        bool success = engine_->updateSyncFolderSettings(folderId, direction, conflictResolution);
 
         json response = {
             {"type", "sync_folder_updated"},
             {"folder_id", folderId},
+            {"sync_direction", syncDirStr},
             {"conflict_resolution", conflictResolution},
-            {"success", true}
+            {"success", success}
         };
         sendResponse(response, requestId);
 
@@ -523,7 +982,13 @@ void IpcServer::handleGetSyncState(int requestId) {
             {"pendingUploads", state.pendingUploads},
             {"pendingDownloads", state.pendingDownloads},
             {"lastSync", state.lastSync},
-            {"syncFolderCount", static_cast<int>(folders.size())}
+            {"syncFolderCount", static_cast<int>(folders.size())},
+            {"currentFile", state.currentFile},
+            {"totalFiles", state.totalFiles},
+            {"processedFiles", state.processedFiles},
+            {"currentFileSize", state.currentFileSize},
+            {"currentFileTransferred", state.currentFileTransferred},
+            {"currentFilePercent", state.currentFilePercent}
         };
 
         json response = {
@@ -557,7 +1022,10 @@ void IpcServer::handleGetFolders(int requestId) {
                 {"remote_path", folder.remotePath},
                 {"status", status_str},
                 {"enabled", folder.enabled},
-                {"size", folder.size}
+                {"size", folder.size},
+                {"last_sync", folder.lastSync},
+                {"sync_direction", directionToString(folder.direction)},
+                {"conflict_resolution", folder.conflictResolution}
             };
             folderArray.push_back(folderJson);
         }
@@ -579,6 +1047,7 @@ void IpcServer::sendResponse(const json& response, int requestId) {
     if (requestId >= 0) {
         output["id"] = requestId;
     }
+    std::lock_guard<std::mutex> lock(outputMutex_);
     std::cout << output.dump() << std::endl;
     std::cout.flush();
 }
@@ -593,6 +1062,7 @@ void IpcServer::sendError(const std::string& error, int requestId) {
     if (requestId >= 0) {
         response["id"] = requestId;
     }
+    std::lock_guard<std::mutex> lock(outputMutex_);
     std::cout << response.dump() << std::endl;
     std::cout.flush();
 }
@@ -603,6 +1073,113 @@ void IpcServer::broadcastEvent(const std::string& eventType, const json& data) {
         {"data", data}
     };
     sendResponse(event, -1);
+}
+
+// Remote folder browser handler (Selective Sync)
+void IpcServer::handleListRemoteFolders(const json& message, int requestId) {
+    try {
+        if (!engine_ || !engine_->getHttpClient()) {
+            sendError("Not authenticated", requestId);
+            return;
+        }
+
+        std::string path = "/";
+        if (message.contains("data") && message["data"].contains("path")) {
+            path = message["data"]["path"].get<std::string>();
+        } else if (message.contains("payload") && message["payload"].contains("path")) {
+            path = message["payload"]["path"].get<std::string>();
+        }
+
+        auto files = engine_->getHttpClient()->listFiles(path);
+
+        json folderArray = json::array();
+        for (const auto& file : files) {
+            if (file.isDirectory) {
+                json folderJson = {
+                    {"name", file.name},
+                    {"path", file.path},
+                    {"size", file.size},
+                    {"is_directory", true},
+                    {"modified_at", file.modifiedAt}
+                };
+                folderArray.push_back(folderJson);
+            }
+        }
+
+        json response = {
+            {"type", "remote_folders"},
+            {"success", true},
+            {"data", {
+                {"folders", folderArray},
+                {"current_path", path}
+            }}
+        };
+        sendResponse(response, requestId);
+
+    } catch (const std::exception& e) {
+        Logger::error("handleListRemoteFolders error: {}", e.what());
+        sendError(e.what(), requestId);
+    }
+}
+
+// Activity logs handler
+void IpcServer::handleGetActivityLogs(const json& message, int requestId) {
+    try {
+        if (!engine_ || !engine_->getDatabase()) {
+            sendError("Database not initialized", requestId);
+            return;
+        }
+
+        int limit = 50;
+        std::string activityType;
+
+        if (message.contains("data")) {
+            if (message["data"].contains("limit")) {
+                limit = message["data"]["limit"].get<int>();
+            }
+            if (message["data"].contains("activity_type")) {
+                activityType = message["data"]["activity_type"].get<std::string>();
+            }
+        } else if (message.contains("payload")) {
+            if (message["payload"].contains("limit")) {
+                limit = message["payload"]["limit"].get<int>();
+            }
+            if (message["payload"].contains("activity_type")) {
+                activityType = message["payload"]["activity_type"].get<std::string>();
+            }
+        }
+
+        auto logs = engine_->getDatabase()->getActivityLogs(limit, activityType);
+
+        json logArray = json::array();
+        for (const auto& log : logs) {
+            json logJson = {
+                {"id", log.id},
+                {"timestamp", log.timestamp},
+                {"activity_type", log.activityType},
+                {"file_path", log.filePath},
+                {"folder_id", log.folderId},
+                {"details", log.details},
+                {"file_size", log.fileSize},
+                {"status", log.status}
+            };
+            logArray.push_back(logJson);
+        }
+
+        json response = {
+            {"type", "activity_logs"},
+            {"success", true},
+            {"data", {
+                {"logs", logArray},
+                {"count", static_cast<int>(logArray.size())}
+            }}
+        };
+        sendResponse(response, requestId);
+
+    } catch (const std::exception& e) {
+        Logger::error("handleGetActivityLogs error: {}", e.what());
+        sendError(e.what(), requestId);
+    }
 }
 
 // File operation handlers
@@ -1092,22 +1669,22 @@ void IpcServer::handleGetRaidStatus(int requestId) {
                 }
 
                 auto& json = *response;
-                raidStatus.dev_mode = json.value("dev_mode", false);
+                raidStatus.dev_mode = safe_value<bool>(json, "dev_mode", false);
 
                 if (json.contains("arrays") && json["arrays"].is_array()) {
                     for (const auto& arrayJson : json["arrays"]) {
                         RaidArray array;
-                        array.name = arrayJson.value("name", "");
-                        array.level = arrayJson.value("level", "");
-                        array.status = arrayJson.value("status", "");
-                        array.size_bytes = arrayJson.value("size_bytes", 0LL);
-                        array.resync_progress = arrayJson.value("resync_progress", 0.0);
+                        array.name = safe_value<std::string>(arrayJson, "name", "");
+                        array.level = safe_value<std::string>(arrayJson, "level", "");
+                        array.status = safe_value<std::string>(arrayJson, "status", "");
+                        array.size_bytes = safe_value<long long>(arrayJson, "size_bytes", 0LL);
+                        array.resync_progress = safe_value<double>(arrayJson, "resync_progress", 0.0);
 
                         if (arrayJson.contains("devices") && arrayJson["devices"].is_array()) {
                             for (const auto& devJson : arrayJson["devices"]) {
                                 RaidDevice device;
-                                device.name = devJson.value("name", "");
-                                device.state = devJson.value("state", "");
+                                device.name = safe_value<std::string>(devJson, "name", "");
+                                device.state = safe_value<std::string>(devJson, "state", "");
                                 array.devices.push_back(device);
                             }
                         }

@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include "../db/database.h"
 
 namespace baludesk {
@@ -27,6 +29,12 @@ private:
     // Sync handlers
     void handlePing(int requestId = -1);
     void handleLogin(const nlohmann::json& message, int requestId = -1);
+    void handleSetTokens(const nlohmann::json& message, int requestId = -1);
+    void handleCheckStoredTokens(int requestId = -1);
+    void handleLogout(int requestId = -1);
+    void handleGetDeviceInfo(int requestId = -1);
+    void handleRequestDeviceCode(const nlohmann::json& message, int requestId = -1);
+    void handlePollDeviceCode(const nlohmann::json& message, int requestId = -1);
     void handleAddSyncFolder(const nlohmann::json& message, int requestId = -1);
     void handleRemoveSyncFolder(const nlohmann::json& message, int requestId = -1);
     void handlePauseSync(const nlohmann::json& message, int requestId = -1);
@@ -34,7 +42,8 @@ private:
     void handleUpdateSyncFolder(const nlohmann::json& message, int requestId = -1);
     void handleGetSyncState(int requestId = -1);
     void handleGetFolders(int requestId = -1);
-    
+    void handleTriggerSync(const nlohmann::json& message, int requestId = -1);
+
     // System info handler
     void handleGetSystemInfo(int requestId = -1);
     
@@ -90,13 +99,24 @@ private:
     // Network discovery handlers
     void handleDiscoverNetworkServers(int requestId = -1);
     void handleCheckServerHealth(const nlohmann::json& message, int requestId = -1);
-    
+
+    // Remote folder browser (Selective Sync)
+    void handleListRemoteFolders(const nlohmann::json& message, int requestId = -1);
+
+    // Activity logs
+    void handleGetActivityLogs(const nlohmann::json& message, int requestId = -1);
+
     void sendResponse(const nlohmann::json& response, int requestId = -1);
     void sendError(const std::string& error, int requestId = -1);
 
     SyncEngine* engine_;
     std::unique_ptr<BaluhostClient> baluhostClient_;
     std::string currentUsername_;  // Track currently logged-in user
+    std::mutex outputMutex_;  // Protects stdout writes from concurrent threads
+
+    // C4: Managed async sync thread (replaces detached thread)
+    std::thread asyncSyncThread_;
+    std::mutex asyncSyncMutex_;
 };
 
 } // namespace baludesk
