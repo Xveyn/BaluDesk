@@ -67,10 +67,11 @@ bool Database::runMigrations() {
         return false;
     }
     
-    // Create file_metadata table
+    // A4: Create file_metadata table with composite primary key (path, folder_id)
+    // This prevents data loss when multiple sync folders contain files with the same relative path.
     std::string createFileMetadataTable = R"(
         CREATE TABLE IF NOT EXISTS file_metadata (
-            path TEXT PRIMARY KEY,
+            path TEXT NOT NULL,
             folder_id TEXT NOT NULL,
             size INTEGER NOT NULL DEFAULT 0,
             modified_at TEXT NOT NULL,
@@ -78,12 +79,46 @@ bool Database::runMigrations() {
             is_directory INTEGER NOT NULL DEFAULT 0,
             sync_status TEXT NOT NULL DEFAULT 'synced',
             last_synced_at TEXT,
+            PRIMARY KEY (path, folder_id),
             FOREIGN KEY (folder_id) REFERENCES sync_folders(id) ON DELETE CASCADE
         );
     )";
-    
+
     if (!executeQuery(createFileMetadataTable)) {
         return false;
+    }
+
+    // A4: Migrate existing file_metadata if it has old schema (path-only PK)
+    // Check if the old table exists with single-column PK and migrate
+    {
+        const char* checkSql = "SELECT sql FROM sqlite_master WHERE type='table' AND name='file_metadata';";
+        sqlite3_stmt* checkStmt = prepareStatement(checkSql);
+        if (checkStmt) {
+            if (sqlite3_step(checkStmt) == SQLITE_ROW) {
+                const char* createSql = reinterpret_cast<const char*>(sqlite3_column_text(checkStmt, 0));
+                if (createSql) {
+                    std::string schema(createSql);
+                    // Old schema had "path TEXT PRIMARY KEY" without composite key
+                    if (schema.find("PRIMARY KEY (path, folder_id)") == std::string::npos &&
+                        schema.find("path TEXT PRIMARY KEY") != std::string::npos) {
+                        Logger::info("Migrating file_metadata to composite primary key (path, folder_id)");
+                        sqlite3_finalize(checkStmt);
+                        // Perform migration
+                        executeQuery("ALTER TABLE file_metadata RENAME TO file_metadata_old;");
+                        executeQuery(createFileMetadataTable);
+                        executeQuery(R"(
+                            INSERT OR IGNORE INTO file_metadata
+                            SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, last_synced_at
+                            FROM file_metadata_old;
+                        )");
+                        executeQuery("DROP TABLE IF EXISTS file_metadata_old;");
+                        Logger::info("file_metadata migration completed");
+                        checkStmt = nullptr;  // Already finalized
+                    }
+                }
+            }
+            if (checkStmt) sqlite3_finalize(checkStmt);
+        }
     }
     
     // Create conflicts table
@@ -181,6 +216,14 @@ bool Database::runMigrations() {
     executeQuery("CREATE INDEX IF NOT EXISTS idx_activity_type ON activity_logs(activity_type);");
     executeQuery("CREATE INDEX IF NOT EXISTS idx_activity_status ON activity_logs(status);");
 
+    // Add change_token column to sync_folders (safe to run multiple times)
+    executeQuery("ALTER TABLE sync_folders ADD COLUMN change_token TEXT DEFAULT '';");
+    // Ignore error if column already exists - SQLite doesn't support IF NOT EXISTS for ALTER TABLE
+
+    // Add sync_direction and conflict_resolution columns
+    executeQuery("ALTER TABLE sync_folders ADD COLUMN sync_direction TEXT NOT NULL DEFAULT 'bidirectional';");
+    executeQuery("ALTER TABLE sync_folders ADD COLUMN conflict_resolution TEXT NOT NULL DEFAULT 'ask';");
+
     Logger::info("Database migrations completed");
     return true;
 }
@@ -191,75 +234,91 @@ bool Database::runMigrations() {
 
 bool Database::addSyncFolder(const SyncFolder& folder) {
     Logger::info("Adding sync folder: {} -> {}", folder.localPath, folder.remotePath);
-    
+
     const char* sql = R"(
-        INSERT INTO sync_folders (id, local_path, remote_path, status, enabled)
-        VALUES (?, ?, ?, ?, ?);
+        INSERT INTO sync_folders (id, local_path, remote_path, status, enabled, sync_direction, conflict_resolution)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return false;
-    
+
     sqlite3_bind_text(stmt, 1, folder.id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, folder.localPath.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, folder.remotePath.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     std::string status = "idle";
     if (folder.status == SyncStatus::SYNCING) status = "syncing";
     else if (folder.status == SyncStatus::PAUSED) status = "paused";
     else if (folder.status == SyncStatus::SYNC_ERROR) status = "error";
-    
+
     sqlite3_bind_text(stmt, 4, status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 5, folder.enabled ? 1 : 0);
-    
+
+    // Sync direction
+    std::string dirStr = "bidirectional";
+    if (folder.direction == SyncDirection::PUSH) dirStr = "push";
+    else if (folder.direction == SyncDirection::PULL) dirStr = "pull";
+    sqlite3_bind_text(stmt, 6, dirStr.c_str(), -1, SQLITE_TRANSIENT);
+
+    // Conflict resolution
+    sqlite3_bind_text(stmt, 7, folder.conflictResolution.c_str(), -1, SQLITE_TRANSIENT);
+
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    
+
     if (rc != SQLITE_DONE) {
         Logger::error("Failed to add sync folder: {}", sqlite3_errmsg(db_));
         return false;
     }
-    
+
     Logger::info("Sync folder added successfully");
     return true;
 }
 
 bool Database::updateSyncFolder(const SyncFolder& folder) {
     Logger::debug("Updating sync folder: {}", folder.id);
-    
+
     const char* sql = R"(
-        UPDATE sync_folders 
-        SET local_path = ?, remote_path = ?, status = ?, enabled = ?, last_sync = ?
+        UPDATE sync_folders
+        SET local_path = ?, remote_path = ?, status = ?, enabled = ?, last_sync = ?,
+            sync_direction = ?, conflict_resolution = ?
         WHERE id = ?;
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return false;
-    
+
     sqlite3_bind_text(stmt, 1, folder.localPath.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, folder.remotePath.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     std::string status = "idle";
     if (folder.status == SyncStatus::SYNCING) status = "syncing";
     else if (folder.status == SyncStatus::PAUSED) status = "paused";
     else if (folder.status == SyncStatus::SYNC_ERROR) status = "error";
-    
+
     sqlite3_bind_text(stmt, 3, status.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 4, folder.enabled ? 1 : 0);
-    
+
     // TODO: Use actual last_sync timestamp
     sqlite3_bind_null(stmt, 5);
-    
-    sqlite3_bind_text(stmt, 6, folder.id.c_str(), -1, SQLITE_TRANSIENT);
-    
+
+    std::string dirStr = "bidirectional";
+    if (folder.direction == SyncDirection::PUSH) dirStr = "push";
+    else if (folder.direction == SyncDirection::PULL) dirStr = "pull";
+    sqlite3_bind_text(stmt, 6, dirStr.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, folder.conflictResolution.c_str(), -1, SQLITE_TRANSIENT);
+
+    sqlite3_bind_text(stmt, 8, folder.id.c_str(), -1, SQLITE_TRANSIENT);
+
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    
+
     if (rc != SQLITE_DONE) {
         Logger::error("Failed to update sync folder: {}", sqlite3_errmsg(db_));
         return false;
     }
-    
+
     return true;
 }
 
@@ -286,62 +345,90 @@ bool Database::removeSyncFolder(const std::string& folderId) {
 }
 
 SyncFolder Database::getSyncFolder(const std::string& folderId) {
-    const char* sql = "SELECT id, local_path, remote_path, status, enabled FROM sync_folders WHERE id = ?;";
-    
+    const char* sql = "SELECT id, local_path, remote_path, status, enabled, last_sync, sync_direction, conflict_resolution FROM sync_folders WHERE id = ?;";
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return SyncFolder();
-    
+
     sqlite3_bind_text(stmt, 1, folderId.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     SyncFolder folder;
-    
+
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         folder.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         folder.localPath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         folder.remotePath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        
+
         std::string status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
         if (status == "syncing") folder.status = SyncStatus::SYNCING;
         else if (status == "paused") folder.status = SyncStatus::PAUSED;
         else if (status == "error") folder.status = SyncStatus::SYNC_ERROR;
         else folder.status = SyncStatus::IDLE;
-        
+
         folder.enabled = sqlite3_column_int(stmt, 4) != 0;
+
+        const char* lastSync = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        if (lastSync) folder.lastSync = lastSync;
+
+        const char* dirStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        if (dirStr) {
+            std::string dir(dirStr);
+            if (dir == "push") folder.direction = SyncDirection::PUSH;
+            else if (dir == "pull") folder.direction = SyncDirection::PULL;
+            else folder.direction = SyncDirection::BIDIRECTIONAL;
+        }
+
+        const char* crStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (crStr) folder.conflictResolution = crStr;
     }
-    
+
     sqlite3_finalize(stmt);
     return folder;
 }
 
 std::vector<SyncFolder> Database::getSyncFolders() {
     Logger::debug("Getting all sync folders");
-    
-    const char* sql = "SELECT id, local_path, remote_path, status, enabled FROM sync_folders WHERE enabled = 1;";
-    
+
+    const char* sql = "SELECT id, local_path, remote_path, status, enabled, last_sync, sync_direction, conflict_resolution FROM sync_folders WHERE enabled = 1;";
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return {};
-    
+
     std::vector<SyncFolder> folders;
-    
+
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         SyncFolder folder;
         folder.id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         folder.localPath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         folder.remotePath = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        
+
         std::string status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
         if (status == "syncing") folder.status = SyncStatus::SYNCING;
         else if (status == "paused") folder.status = SyncStatus::PAUSED;
         else if (status == "error") folder.status = SyncStatus::SYNC_ERROR;
         else folder.status = SyncStatus::IDLE;
-        
+
         folder.enabled = sqlite3_column_int(stmt, 4) != 0;
-        
+
+        const char* lastSync = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        if (lastSync) folder.lastSync = lastSync;
+
+        const char* dirStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        if (dirStr) {
+            std::string dir(dirStr);
+            if (dir == "push") folder.direction = SyncDirection::PUSH;
+            else if (dir == "pull") folder.direction = SyncDirection::PULL;
+            else folder.direction = SyncDirection::BIDIRECTIONAL;
+        }
+
+        const char* crStr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (crStr) folder.conflictResolution = crStr;
+
         folders.push_back(folder);
     }
-    
+
     sqlite3_finalize(stmt);
-    
+
     Logger::debug("Found {} sync folders", folders.size());
     return folders;
 }
@@ -351,10 +438,11 @@ std::vector<SyncFolder> Database::getSyncFolders() {
 // ============================================================================
 
 bool Database::upsertFileMetadata(const FileMetadata& metadata) {
+    // A4: Use composite key (path, folder_id) for ON CONFLICT
     const char* sql = R"(
         INSERT INTO file_metadata (path, folder_id, size, modified_at, checksum, is_directory, sync_status, last_synced_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(path) DO UPDATE SET
+        ON CONFLICT(path, folder_id) DO UPDATE SET
             size = excluded.size,
             modified_at = excluded.modified_at,
             checksum = excluded.checksum,
@@ -417,8 +505,43 @@ std::optional<FileMetadata> Database::getFileMetadata(const std::string& path) {
     return std::nullopt;
 }
 
-bool Database::upsertFileMetadata(const std::string& path, const std::string& folderId, 
-                                  uint64_t size, const std::string& checksum, 
+std::optional<FileMetadata> Database::getFileMetadata(const std::string& path, const std::string& folderId) {
+    // A4: Folder-scoped lookup using composite primary key
+    const char* sql = R"(
+        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status
+        FROM file_metadata WHERE path = ? AND folder_id = ?;
+    )";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return std::nullopt;
+
+    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    FileMetadata metadata;
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        metadata.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        metadata.folderId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        metadata.size = sqlite3_column_int64(stmt, 2);
+        metadata.modifiedAt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+
+        const char* checksum = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        if (checksum) metadata.checksum = checksum;
+
+        metadata.isDirectory = sqlite3_column_int(stmt, 5) != 0;
+        metadata.syncStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+
+        sqlite3_finalize(stmt);
+        return metadata;
+    }
+
+    sqlite3_finalize(stmt);
+    return std::nullopt;
+}
+
+bool Database::upsertFileMetadata(const std::string& path, const std::string& folderId,
+                                  uint64_t size, const std::string& checksum,
                                   const std::string& modifiedAt) {
     FileMetadata metadata;
     metadata.path = path;
@@ -504,15 +627,31 @@ std::vector<FileMetadata> Database::getChangedFilesSince(const std::string& time
 
 bool Database::deleteFileMetadata(const std::string& path) {
     const char* sql = "DELETE FROM file_metadata WHERE path = ?;";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return false;
-    
+
     sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    
+
+    return rc == SQLITE_DONE;
+}
+
+bool Database::deleteFileMetadata(const std::string& path, const std::string& folderId) {
+    // H5: Folder-scoped delete to prevent cross-folder collisions on identical relative paths
+    const char* sql = "DELETE FROM file_metadata WHERE path = ? AND folder_id = ?;";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return false;
+
+    sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
     return rc == SQLITE_DONE;
 }
 
@@ -533,6 +672,95 @@ bool Database::updateSyncFolderTimestamp(const std::string& folderId) {
     }
     
     return true;
+}
+
+bool Database::updateSyncFolderStatus(const std::string& folderId, const std::string& status) {
+    const char* sql = "UPDATE sync_folders SET status = ? WHERE id = ?;";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return false;
+
+    sqlite3_bind_text(stmt, 1, status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        Logger::error("Failed to update sync folder status: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Folder Settings Update
+// ============================================================================
+
+bool Database::updateSyncFolderSettings(const std::string& folderId, const std::string& syncDirection, const std::string& conflictResolution) {
+    Logger::info("Updating settings for folder {}: direction={}, conflict={}", folderId, syncDirection, conflictResolution);
+
+    const char* sql = "UPDATE sync_folders SET sync_direction = ?, conflict_resolution = ? WHERE id = ?;";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return false;
+
+    sqlite3_bind_text(stmt, 1, syncDirection.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, conflictResolution.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        Logger::error("Failed to update sync folder settings: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// Change Token
+// ============================================================================
+
+bool Database::setChangeToken(const std::string& folderId, const std::string& token) {
+    const char* sql = "UPDATE sync_folders SET change_token = ? WHERE id = ?;";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return false;
+
+    sqlite3_bind_text(stmt, 1, token.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        Logger::error("Failed to set change token: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    return true;
+}
+
+std::string Database::getChangeToken(const std::string& folderId) {
+    const char* sql = "SELECT change_token FROM sync_folders WHERE id = ?;";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return "";
+
+    sqlite3_bind_text(stmt, 1, folderId.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::string token;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (val) token = val;
+    }
+
+    sqlite3_finalize(stmt);
+    return token;
 }
 
 // ============================================================================
@@ -1010,25 +1238,27 @@ std::vector<ActivityLog> Database::getActivityLogs(int limit, const std::string&
                                                    const std::string& startDate, const std::string& endDate) {
     std::vector<ActivityLog> logs;
 
+    // K5: Use prepared statements to prevent SQL injection
     std::string sql = "SELECT id, timestamp, activity_type, file_path, folder_id, details, file_size, status "
                      "FROM activity_logs WHERE 1=1";
 
-    if (!activityType.empty()) {
-        sql += " AND activity_type = '" + activityType + "'";
-    }
+    int bindIndex = 1;
+    bool hasActivityType = !activityType.empty();
+    bool hasStartDate = !startDate.empty();
+    bool hasEndDate = !endDate.empty();
 
-    if (!startDate.empty()) {
-        sql += " AND timestamp >= '" + startDate + "'";
-    }
-
-    if (!endDate.empty()) {
-        sql += " AND timestamp <= '" + endDate + "'";
-    }
-
-    sql += " ORDER BY timestamp DESC LIMIT " + std::to_string(limit) + ";";
+    if (hasActivityType) sql += " AND activity_type = ?";
+    if (hasStartDate) sql += " AND timestamp >= ?";
+    if (hasEndDate) sql += " AND timestamp <= ?";
+    sql += " ORDER BY timestamp DESC LIMIT ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return logs;
+
+    if (hasActivityType) sqlite3_bind_text(stmt, bindIndex++, activityType.c_str(), -1, SQLITE_TRANSIENT);
+    if (hasStartDate) sqlite3_bind_text(stmt, bindIndex++, startDate.c_str(), -1, SQLITE_TRANSIENT);
+    if (hasEndDate) sqlite3_bind_text(stmt, bindIndex++, endDate.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, bindIndex, limit);
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         ActivityLog log;
@@ -1054,26 +1284,68 @@ std::vector<ActivityLog> Database::getActivityLogs(int limit, const std::string&
 }
 
 bool Database::clearActivityLogs(const std::string& beforeDate) {
-    std::string sql = "DELETE FROM activity_logs";
+    if (beforeDate.empty()) {
+        // Delete all logs
+        if (!executeQuery("DELETE FROM activity_logs;")) {
+            Logger::error("Failed to clear activity logs");
+            return false;
+        }
+    } else {
+        // K5: Use prepared statement to prevent SQL injection
+        const char* sql = "DELETE FROM activity_logs WHERE timestamp < ?;";
+        sqlite3_stmt* stmt = prepareStatement(sql);
+        if (!stmt) return false;
 
-    if (!beforeDate.empty()) {
-        sql += " WHERE timestamp < '" + beforeDate + "'";
-    }
+        sqlite3_bind_text(stmt, 1, beforeDate.c_str(), -1, SQLITE_TRANSIENT);
+        int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
 
-    sql += ";";
-
-    if (!executeQuery(sql)) {
-        Logger::error("Failed to clear activity logs");
-        return false;
+        if (rc != SQLITE_DONE) {
+            Logger::error("Failed to clear activity logs: {}", sqlite3_errmsg(db_));
+            return false;
+        }
     }
 
     Logger::info("Activity logs cleared");
     return true;
 }
 
+int Database::cleanupOldFailedLogs() {
+    const char* sql = "DELETE FROM activity_logs WHERE status = 'failed' AND timestamp < datetime('now', '-1 day');";
+
+    sqlite3_stmt* stmt = prepareStatement(sql);
+    if (!stmt) return 0;
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        Logger::error("Failed to cleanup old failed logs: {}", sqlite3_errmsg(db_));
+        return 0;
+    }
+
+    int deleted = sqlite3_changes(db_);
+    if (deleted > 0) {
+        Logger::info("Cleaned up {} old failed activity log entries", deleted);
+    }
+    return deleted;
+}
+
 // ============================================================================
-// Utilities
+// Transaction Support (C3)
 // ============================================================================
+
+bool Database::beginTransaction() {
+    return executeQuery("BEGIN TRANSACTION;");
+}
+
+bool Database::commitTransaction() {
+    return executeQuery("COMMIT;");
+}
+
+bool Database::rollbackTransaction() {
+    return executeQuery("ROLLBACK;");
+}
 
 std::string Database::generateId() {
     // Generate a UUID-like ID

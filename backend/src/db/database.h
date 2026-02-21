@@ -87,14 +87,24 @@ public:
     SyncFolder getSyncFolder(const std::string& folderId);
     std::vector<SyncFolder> getSyncFolders();
 
+    // Folder settings update (direction + conflict resolution)
+    bool updateSyncFolderSettings(const std::string& folderId, const std::string& syncDirection, const std::string& conflictResolution);
+
     // File metadata
     bool upsertFileMetadata(const FileMetadata& metadata);
     bool upsertFileMetadata(const std::string& path, const std::string& folderId, uint64_t size, const std::string& checksum, const std::string& modifiedAt);
     std::optional<FileMetadata> getFileMetadata(const std::string& path);
+    std::optional<FileMetadata> getFileMetadata(const std::string& path, const std::string& folderId);  // A4: folder-scoped lookup
     std::vector<FileMetadata> getFilesInFolder(const std::string& folderId);
     std::vector<FileMetadata> getChangedFilesSince(const std::string& timestamp);
     bool deleteFileMetadata(const std::string& path);
+    bool deleteFileMetadata(const std::string& path, const std::string& folderId);
     bool updateSyncFolderTimestamp(const std::string& folderId);
+    bool updateSyncFolderStatus(const std::string& folderId, const std::string& status);
+
+    // Change token for delta-sync
+    bool setChangeToken(const std::string& folderId, const std::string& token);
+    std::string getChangeToken(const std::string& folderId);
 
     // Conflicts
     bool logConflict(const Conflict& conflict);
@@ -123,6 +133,12 @@ public:
     std::vector<ActivityLog> getActivityLogs(int limit = 100, const std::string& activityType = "",
                                             const std::string& startDate = "", const std::string& endDate = "");
     bool clearActivityLogs(const std::string& beforeDate = "");
+    int cleanupOldFailedLogs();
+
+    // Transaction support (C3)
+    bool beginTransaction();
+    bool commitTransaction();
+    bool rollbackTransaction();
 
     // Utilities
     std::string generateId();
