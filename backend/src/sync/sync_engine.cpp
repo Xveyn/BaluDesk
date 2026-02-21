@@ -6,6 +6,8 @@
 #include "sync/change_detector.h"
 #include "utils/logger.h"
 #include "utils/settings_manager.h"
+#include "utils/credential_store.h"
+#include "utils/sha256.h"
 #include <chrono>
 #include <thread>
 #include <filesystem>
@@ -13,6 +15,9 @@
 #include <cmath>
 #include <sstream>
 #include <iomanip>
+#include <unordered_set>
+#include <future>
+#include <map>
 
 namespace baludesk {
 
@@ -22,6 +27,11 @@ SyncEngine::SyncEngine() {
     stats_.downloadSpeed = 0;
     stats_.pendingUploads = 0;
     stats_.pendingDownloads = 0;
+    stats_.totalFiles = 0;
+    stats_.processedFiles = 0;
+    stats_.currentFileSize = 0;
+    stats_.currentFileTransferred = 0;
+    stats_.currentFilePercent = 0.0;
 }
 
 SyncEngine::~SyncEngine() {
@@ -166,27 +176,7 @@ bool SyncEngine::login(const std::string& username, const std::string& password,
         }
 
         // Auto-register desktop device after successful login
-        auto& settings = SettingsManager::getInstance();
-
-        // Only register if not already registered
-        if (!settings.isDeviceRegistered()) {
-            Logger::info("Registering desktop device with backend...");
-
-            std::string deviceId = settings.getDeviceId();
-            std::string deviceName = settings.getDeviceName();
-
-            Logger::debug("Device ID: {}, Device Name: {}", deviceId, deviceName);
-
-            if (httpClient_->registerDevice(deviceId, deviceName)) {
-                settings.setDeviceRegistered(true);
-                Logger::info("Desktop device registered successfully");
-            } else {
-                Logger::warn("Failed to register desktop device (non-fatal)");
-                // Don't fail login if device registration fails
-            }
-        } else {
-            Logger::debug("Device already registered, skipping registration");
-        }
+        registerDeviceIfNeeded();
 
         return true;
     }
@@ -201,7 +191,192 @@ void SyncEngine::logout() {
     if (httpClient_) {
         httpClient_->clearAuthToken();
     }
-    Logger::info("Logged out");
+
+    // Clear all stored credentials from OS keychain
+    CredentialStore::deleteToken("access_token");
+    CredentialStore::deleteToken("refresh_token");
+    CredentialStore::deleteToken("server_url");
+    CredentialStore::deleteToken("paired_username");
+
+    storedUsername_.clear();
+    storedServerUrl_.clear();
+
+    Logger::info("Logged out and credentials cleared from keychain");
+}
+
+bool SyncEngine::setTokens(const std::string& serverUrl, const std::string& accessToken,
+                           const std::string& refreshToken, const std::string& username) {
+    Logger::info("Setting tokens for user: {} @ {}", username, serverUrl);
+
+    try {
+        // Create/replace HttpClient with new server URL
+        httpClient_ = std::make_unique<HttpClient>(serverUrl);
+        httpClient_->setAuthToken(accessToken);
+
+        // Update ConflictResolver and ChangeDetector with new client
+        if (database_) {
+            if (conflictResolver_) {
+                conflictResolver_ = std::make_unique<ConflictResolver>(
+                    database_.get(), httpClient_.get()
+                );
+            }
+            if (changeDetector_) {
+                changeDetector_ = std::make_unique<ChangeDetector>(
+                    database_.get(), httpClient_.get()
+                );
+            }
+        }
+
+        // Store all credentials in OS keychain
+        CredentialStore::saveToken("access_token", accessToken);
+        CredentialStore::saveToken("refresh_token", refreshToken);
+        CredentialStore::saveToken("server_url", serverUrl);
+        CredentialStore::saveToken("paired_username", username);
+
+        storedUsername_ = username;
+        storedServerUrl_ = serverUrl;
+        authenticated_ = true;
+
+        // Register device if needed
+        registerDeviceIfNeeded();
+
+        Logger::info("Tokens set successfully for user: {}", username);
+        return true;
+
+    } catch (const std::exception& e) {
+        Logger::error("Failed to set tokens: {}", e.what());
+        return false;
+    }
+}
+
+std::string SyncEngine::checkStoredTokens() {
+    Logger::info("Checking stored tokens...");
+
+    try {
+        std::string accessToken = CredentialStore::loadToken("access_token");
+        std::string serverUrl = CredentialStore::loadToken("server_url");
+
+        if (accessToken.empty() || serverUrl.empty()) {
+            Logger::info("No stored tokens found, needs pairing");
+            return "needs_pairing";
+        }
+
+        std::string refreshToken = CredentialStore::loadToken("refresh_token");
+        std::string username = CredentialStore::loadToken("paired_username");
+
+        // Create HttpClient and set token
+        httpClient_ = std::make_unique<HttpClient>(serverUrl);
+        httpClient_->setAuthToken(accessToken);
+
+        // Update ConflictResolver and ChangeDetector with new client
+        if (database_) {
+            if (conflictResolver_) {
+                conflictResolver_ = std::make_unique<ConflictResolver>(
+                    database_.get(), httpClient_.get()
+                );
+            }
+            if (changeDetector_) {
+                changeDetector_ = std::make_unique<ChangeDetector>(
+                    database_.get(), httpClient_.get()
+                );
+            }
+        }
+
+        storedUsername_ = username;
+        storedServerUrl_ = serverUrl;
+
+        // Try a lightweight API call to verify the token
+        try {
+            httpClient_->get("/api/auth/me");
+            authenticated_ = true;
+            Logger::info("Stored token is valid, user: {}", username);
+            return "authenticated";
+        } catch (const TokenExpiredException&) {
+            // Token expired, try refresh
+            Logger::info("Access token expired, attempting refresh...");
+
+            if (refreshToken.empty()) {
+                Logger::warn("No refresh token available, needs pairing");
+                // Clear invalid credentials
+                CredentialStore::deleteToken("access_token");
+                CredentialStore::deleteToken("refresh_token");
+                CredentialStore::deleteToken("server_url");
+                CredentialStore::deleteToken("paired_username");
+                return "needs_pairing";
+            }
+
+            try {
+                std::string newAccessToken = httpClient_->refreshAccessToken(refreshToken);
+                // Save new access token
+                CredentialStore::saveToken("access_token", newAccessToken);
+                authenticated_ = true;
+                Logger::info("Token refreshed successfully, user: {}", username);
+                return "authenticated";
+            } catch (const std::exception& e) {
+                Logger::error("Token refresh failed: {}", e.what());
+                // Clear all credentials
+                CredentialStore::deleteToken("access_token");
+                CredentialStore::deleteToken("refresh_token");
+                CredentialStore::deleteToken("server_url");
+                CredentialStore::deleteToken("paired_username");
+                return "needs_pairing";
+            }
+        } catch (const std::runtime_error& e) {
+            // Network error (server offline) — optimistically return authenticated
+            // Tokens are kept, sync will fail later when server is back
+            std::string errorMsg(e.what());
+            if (errorMsg.find("CURL error") != std::string::npos) {
+                Logger::warn("Server unreachable, assuming tokens are still valid");
+                authenticated_ = true;
+                return "authenticated";
+            }
+            // Other HTTP error → tokens are likely invalid
+            Logger::error("Token validation failed: {}", e.what());
+            CredentialStore::deleteToken("access_token");
+            CredentialStore::deleteToken("refresh_token");
+            CredentialStore::deleteToken("server_url");
+            CredentialStore::deleteToken("paired_username");
+            return "needs_pairing";
+        }
+
+    } catch (const std::exception& e) {
+        Logger::error("Error checking stored tokens: {}", e.what());
+        return "needs_pairing";
+    }
+}
+
+void SyncEngine::setAuthRequiredCallback(AuthRequiredCallback cb) {
+    authRequiredCallback_ = std::move(cb);
+}
+
+std::string SyncEngine::getStoredUsername() const {
+    return storedUsername_;
+}
+
+std::string SyncEngine::getStoredServerUrl() const {
+    return storedServerUrl_;
+}
+
+void SyncEngine::registerDeviceIfNeeded() {
+    auto& settings = SettingsManager::getInstance();
+
+    if (!settings.isDeviceRegistered()) {
+        Logger::info("Registering desktop device with backend...");
+
+        std::string deviceId = settings.getDeviceId();
+        std::string deviceName = settings.getDeviceName();
+
+        Logger::debug("Device ID: {}, Device Name: {}", deviceId, deviceName);
+
+        if (httpClient_ && httpClient_->registerDevice(deviceId, deviceName)) {
+            settings.setDeviceRegistered(true);
+            Logger::info("Desktop device registered successfully");
+        } else {
+            Logger::warn("Failed to register desktop device (non-fatal)");
+        }
+    } else {
+        Logger::debug("Device already registered, skipping registration");
+    }
 }
 
 bool SyncEngine::isAuthenticated() const {
@@ -225,10 +400,19 @@ bool SyncEngine::addSyncFolder(SyncFolder& folder) {
         if (running_) {
             fileWatcher_->watch(folder.localPath);
         }
-        
-        // Trigger initial sync
-        triggerSync(folder.id);
-        
+
+        // Trigger initial sync in background (non-blocking)
+        // Using a detached thread avoids blocking the IPC response
+        if (running_ && authenticated_) {
+            std::thread([this, folderId = folder.id]() {
+                try {
+                    triggerSync(folderId);
+                } catch (const std::exception& e) {
+                    Logger::error("Initial sync failed for folder {}: {}", folderId, e.what());
+                }
+            }).detach();
+        }
+
         return true;
     }
 
@@ -262,24 +446,33 @@ bool SyncEngine::resumeSync(const std::string& folderId) {
     if (!folder.id.empty()) {
         folder.status = SyncStatus::IDLE;
         fileWatcher_->watch(folder.localPath);
-        triggerSync(folderId);
-        return database_->updateSyncFolder(folder);
+        bool updated = database_->updateSyncFolder(folder);
+        if (running_ && authenticated_) {
+            std::thread([this, folderId]() {
+                try {
+                    triggerSync(folderId);
+                } catch (const std::exception& e) {
+                    Logger::error("Resume sync failed for folder {}: {}", folderId, e.what());
+                }
+            }).detach();
+        }
+        return updated;
     }
     return false;
 }
 
-bool SyncEngine::updateSyncFolderSettings(const std::string& folderId, const std::string& conflictResolution) {
+bool SyncEngine::updateSyncFolderSettings(const std::string& folderId, SyncDirection direction, const std::string& conflictResolution) {
     auto folder = database_->getSyncFolder(folderId);
     if (!folder.id.empty()) {
-        // Update the conflict resolution setting for the folder
-        // Store in the folder's settings - this may require extending SyncFolder struct
-        // For now, we'll just log the update
-        Logger::info("Updated conflict resolution for folder {} to: {}", folderId, conflictResolution);
-        
-        // TODO: Persist the conflict resolution setting to the database
-        // This might require adding a conflict_resolution field to the sync_folders table
-        
-        return true;
+        std::string dirStr = "bidirectional";
+        if (direction == SyncDirection::PUSH) dirStr = "push";
+        else if (direction == SyncDirection::PULL) dirStr = "pull";
+
+        bool success = database_->updateSyncFolderSettings(folderId, dirStr, conflictResolution);
+        if (success) {
+            Logger::info("Updated settings for folder {}: direction={}, conflict={}", folderId, dirStr, conflictResolution);
+        }
+        return success;
     }
     return false;
 }
@@ -312,10 +505,745 @@ std::vector<SyncFolder> SyncEngine::getSyncFolders() const {
 }
 
 void SyncEngine::triggerSync(const std::string& folderId) {
+    // Prevent concurrent sync runs (auto-loop vs manual trigger)
+    if (syncing_.exchange(true)) {
+        Logger::info("Sync already in progress, skipping");
+        return;
+    }
+    // RAII guard: resets syncing_ = false on scope exit (normal or exception)
+    SyncGuard guard(syncing_);
+
     Logger::info("Triggering sync" + (folderId.empty() ? "" : " for folder: " + folderId));
-    
-    // Implementation will scan for changes and sync
-    // This is a simplified version - full implementation in next iteration
+
+    // Periodic cleanup of old failed activity logs (max once per hour)
+    auto now = std::chrono::steady_clock::now();
+    if (database_ && now - lastLogCleanup_ > std::chrono::hours(1)) {
+        database_->cleanupOldFailedLogs();
+        lastLogCleanup_ = now;
+    }
+
+    if (!authenticated_) {
+        Logger::warn("Cannot sync: not authenticated");
+        return;
+    }
+    if (!httpClient_ || !database_ || !changeDetector_) {
+        Logger::error("Cannot sync: components not initialized");
+        return;
+    }
+
+    // Manual sync (specific folder) resets quota backoff
+    if (!folderId.empty()) {
+        quotaExceeded_ = false;
+    }
+
+    auto folders = getSyncFolders();
+    for (const auto& folder : folders) {
+        if (folder.enabled && folder.status != SyncStatus::PAUSED) {
+            if (folderId.empty() || folder.id == folderId) {
+                // Quota backoff: skip automatic syncs for 10 minutes after 507
+                if (quotaExceeded_) {
+                    auto elapsed = std::chrono::steady_clock::now() - quotaExceededAt_;
+                    if (elapsed < std::chrono::minutes(10)) {
+                        auto remaining = std::chrono::duration_cast<std::chrono::minutes>(
+                            std::chrono::minutes(10) - elapsed).count();
+                        Logger::info("Skipping sync for folder {} — quota exceeded, backoff ~{} min remaining",
+                                     folder.id, remaining);
+                        continue;
+                    }
+                    // Backoff period expired
+                    Logger::info("Quota backoff expired, resuming sync");
+                    quotaExceeded_ = false;
+                }
+
+                try {
+                    withTokenRefresh([this, &folder]() {
+                        performDeltaSync(folder);
+                        return true;
+                    });
+                } catch (const std::exception& e) {
+                    Logger::error("Sync failed for folder {}: {}", folder.id, e.what());
+                    stats_.status = SyncStatus::SYNC_ERROR;
+                    notifyStatusChange();
+                }
+            }
+        }
+    }
+}
+
+void SyncEngine::performDeltaSync(const SyncFolder& folder) {
+    Logger::info("Performing delta sync for folder: {} ({})", folder.localPath, folder.remotePath);
+
+    {
+        std::lock_guard<std::mutex> lock(statsMutex_);
+        stats_.status = SyncStatus::SYNCING;
+        stats_.currentFile = "";
+        stats_.totalFiles = 0;
+        stats_.processedFiles = 0;
+        stats_.pendingDownloads = 0;
+        stats_.pendingUploads = 0;
+        stats_.uploadSpeed = 0;
+        stats_.downloadSpeed = 0;
+        stats_.currentFileSize = 0;
+        stats_.currentFileTransferred = 0;
+        stats_.currentFilePercent = 0.0;
+    }
+    notifyStatusChange();
+
+    try {
+        // 1. Detect local changes by scanning filesystem and comparing against DB
+        auto localChanges = changeDetector_->detectLocalChanges(folder.id, folder.localPath);
+        Logger::info("Detected {} local changes for folder {}", localChanges.size(), folder.id);
+
+        // 2. Build file metadata list for delta-sync request
+        std::vector<FileMetadataEntry> fileList;
+        for (const auto& change : localChanges) {
+            if (change.type != ChangeType::DELETED) {
+                FileMetadataEntry entry;
+                entry.path = change.path;
+                entry.hash = change.hash.value_or("");
+                entry.size = change.size;
+                auto time = std::chrono::system_clock::to_time_t(change.timestamp);
+                std::tm timeInfo;
+                gmtime_s(&timeInfo, &time);
+                std::stringstream ss;
+                ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
+                entry.modified_at = ss.str();
+                fileList.push_back(entry);
+            }
+        }
+
+        // Also include unchanged files from DB so server can do a full comparison
+        auto dbFiles = database_->getFilesInFolder(folder.id);
+        std::unordered_set<std::string> changedPaths;
+        for (const auto& change : localChanges) {
+            changedPaths.insert(change.path);
+        }
+        for (const auto& dbFile : dbFiles) {
+            if (changedPaths.find(dbFile.path) == changedPaths.end()) {
+                FileMetadataEntry entry;
+                entry.path = dbFile.path;
+                entry.hash = dbFile.checksum;
+                entry.size = dbFile.size;
+                entry.modified_at = dbFile.modifiedAt;
+                fileList.push_back(entry);
+            }
+        }
+
+        // 3. Send delta-sync request to server
+        std::string deviceId = SettingsManager::getInstance().getDeviceId();
+        std::string changeToken = database_->getChangeToken(folder.id);
+
+        // Update folder status to syncing
+        database_->updateSyncFolderStatus(folder.id, "syncing");
+
+        DeltaSyncResponse delta;
+        bool deltaSyncSucceeded = false;
+        try {
+            delta = httpClient_->performDeltaSync(deviceId, fileList, changeToken);
+            deltaSyncSucceeded = true;
+        } catch (const std::exception& e) {
+            Logger::warn("Delta sync request failed ({}), falling back to local uploads only", e.what());
+            // Continue with empty delta — uploads will still proceed
+        }
+
+        // A3: Build local uploads from change detector only (BaluHost has no toUpload field)
+        std::vector<std::string> localUploads;
+        for (const auto& change : localChanges) {
+            if (change.type == ChangeType::CREATED || change.type == ChangeType::MODIFIED) {
+                localUploads.push_back(change.path);
+            }
+        }
+
+        // Calculate total work
+        uint32_t totalWork = static_cast<uint32_t>(
+            delta.toDownload.size() + localUploads.size() +
+            delta.toDelete.size() + delta.conflicts.size()
+        );
+
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            stats_.totalFiles = totalWork;
+            stats_.processedFiles = 0;
+            stats_.pendingDownloads = static_cast<uint32_t>(delta.toDownload.size());
+            stats_.pendingUploads = static_cast<uint32_t>(localUploads.size());
+        }
+        notifyStatusChange();
+
+        // 4. Process downloads (server has newer versions) — skip for PUSH mode
+        if (folder.direction != SyncDirection::PUSH) {
+        for (const auto& remoteFile : delta.toDownload) {
+            if (!running_) break;
+
+            std::string localPath = folder.localPath + "/" + remoteFile.path;
+            std::string remotePath = folder.remotePath + "/" + remoteFile.path;
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.currentFile = remoteFile.path;
+                stats_.currentFileSize = remoteFile.size;
+                stats_.currentFileTransferred = 0;
+                stats_.currentFilePercent = 0.0;
+            }
+            notifyStatusChange();
+
+            // Create parent directories
+            std::filesystem::path localPathObj(localPath);
+            std::filesystem::create_directories(localPathObj.parent_path());
+
+            bool downloaded = false;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (!running_) break;
+                try {
+                    if (httpClient_->downloadFile(remotePath, localPath)) {
+                        // C3: Wrap DB updates in transaction for atomicity
+                        database_->beginTransaction();
+                        bool dbOk = database_->upsertFileMetadata(
+                            remoteFile.path, folder.id, remoteFile.size,
+                            remoteFile.hash, remoteFile.modifiedAt
+                        );
+                        dbOk = dbOk && database_->logActivity("download", remoteFile.path, folder.id,
+                                               "Downloaded from server", static_cast<int64_t>(remoteFile.size), "success");
+                        if (dbOk) {
+                            database_->commitTransaction();
+                        } else {
+                            database_->rollbackTransaction();
+                            Logger::error("DB update failed after download: {}", remoteFile.path);
+                        }
+                        Logger::info("Downloaded: {}", remoteFile.path);
+                        downloaded = true;
+                        break;
+                    }
+                } catch (const RateLimitException& rle) {
+                    int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                    Logger::warn("Rate limited on download, waiting {}s ({}/3): {}",
+                                 waitSec, attempt + 1, remoteFile.path);
+                    for (int i = 0; i < waitSec && running_; ++i) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                    if (!running_) break;
+                } catch (const TokenExpiredException&) {
+                    Logger::warn("Token expired during download, propagating for refresh");
+                    throw;  // Let withTokenRefresh handle it
+                } catch (const std::exception& e) {
+                    Logger::error("Download error (attempt {}/3): {} — {}",
+                                  attempt + 1, remoteFile.path, e.what());
+                    if (attempt < 2) {
+                        std::this_thread::sleep_for(std::chrono::seconds(2 * (attempt + 1)));
+                    }
+                }
+            }
+
+            if (!downloaded && running_) {
+                database_->logActivity("download", remoteFile.path, folder.id,
+                                       "Download failed after 3 attempts", static_cast<int64_t>(remoteFile.size), "failed");
+                Logger::error("Download failed after 3 attempts: {}", remoteFile.path);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.processedFiles++;
+                if (stats_.pendingDownloads > 0) stats_.pendingDownloads--;
+                stats_.currentFileSize = 0;
+                stats_.currentFileTransferred = 0;
+                stats_.currentFilePercent = 0.0;
+            }
+            notifyStatusChange();
+        }
+
+        // 5. Process deletions (server deleted these files) — also skip for PUSH mode
+        for (const auto& deletePath : delta.toDelete) {
+            if (!running_) break;
+
+            std::string localPath = folder.localPath + "/" + deletePath;
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.currentFile = deletePath;
+            }
+            notifyStatusChange();
+
+            try {
+                if (std::filesystem::exists(localPath)) {
+                    std::filesystem::remove(localPath);
+                    Logger::info("Deleted local file (server deleted): {}", deletePath);
+                }
+                database_->deleteFileMetadata(deletePath, folder.id);
+                database_->logActivity("delete", deletePath, folder.id,
+                                       "Deleted (server removed)", 0, "success");
+            } catch (const std::exception& e) {
+                Logger::error("Failed to delete {}: {}", deletePath, e.what());
+                database_->logActivity("delete", deletePath, folder.id,
+                                       std::string("Delete failed: ") + e.what(), 0, "failed");
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.processedFiles++;
+            }
+            notifyStatusChange();
+        }
+        } // end direction != PUSH
+
+        // 6. Process uploads (local changes that need to go to server) — skip for PULL mode
+        if (folder.direction != SyncDirection::PULL) {
+        bool quotaExceeded = false;
+
+        // --- Batch Upload: Group small files by directory, large files individually ---
+        const uint64_t BATCH_SIZE_THRESHOLD = 1024 * 1024; // 1 MB
+        const size_t MAX_BATCH_FILES = 20;
+        const size_t MAX_CONCURRENT = 2;
+
+        struct BatchJob {
+            std::string remoteDir;
+            std::vector<std::string> localPaths;
+            std::vector<std::string> uploadPaths;
+        };
+
+        std::vector<std::string> largeFileUploads;
+        std::map<std::string, BatchJob> batchesByDir;
+
+        // Classify uploads: handle deletions, separate small vs large files
+        for (const auto& uploadPath : localUploads) {
+            std::string localPath = folder.localPath + "/" + uploadPath;
+
+            if (!std::filesystem::exists(localPath)) {
+                // File was deleted locally — tell server to delete
+                std::string remotePath = folder.remotePath + "/" + uploadPath;
+                if (httpClient_->deleteFile(remotePath)) {
+                    database_->deleteFileMetadata(uploadPath, folder.id);
+                    database_->logActivity("delete", uploadPath, folder.id,
+                                           "Deleted on server (local removed)", 0, "success");
+                }
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.processedFiles++;
+                    if (stats_.pendingUploads > 0) stats_.pendingUploads--;
+                }
+                notifyStatusChange();
+                continue;
+            }
+
+            uint64_t fileSize = std::filesystem::file_size(localPath);
+            if (fileSize >= BATCH_SIZE_THRESHOLD) {
+                largeFileUploads.push_back(uploadPath);
+            } else {
+                std::string dir;
+                auto lastSlash = uploadPath.find_last_of('/');
+                if (lastSlash != std::string::npos) {
+                    dir = uploadPath.substr(0, lastSlash);
+                }
+                std::string remoteDir = folder.remotePath + (dir.empty() ? "" : "/" + dir);
+                auto& batch = batchesByDir[remoteDir];
+                batch.remoteDir = remoteDir;
+                batch.localPaths.push_back(localPath);
+                batch.uploadPaths.push_back(uploadPath);
+            }
+        }
+
+        // Split into chunks of max MAX_BATCH_FILES
+        std::vector<BatchJob> allBatches;
+        for (auto& [dir, batch] : batchesByDir) {
+            for (size_t i = 0; i < batch.localPaths.size(); i += MAX_BATCH_FILES) {
+                BatchJob chunk;
+                chunk.remoteDir = batch.remoteDir;
+                size_t end = (std::min)(i + MAX_BATCH_FILES, batch.localPaths.size());
+                chunk.localPaths.assign(batch.localPaths.begin() + i, batch.localPaths.begin() + end);
+                chunk.uploadPaths.assign(batch.uploadPaths.begin() + i, batch.uploadPaths.begin() + end);
+                allBatches.push_back(std::move(chunk));
+            }
+        }
+
+        {
+            size_t smallFileCount = 0;
+            for (const auto& b : allBatches) smallFileCount += b.localPaths.size();
+            Logger::info("Upload plan: {} batches ({} small files), {} large files",
+                         allBatches.size(), smallFileCount, largeFileUploads.size());
+        }
+
+        // Upload batches (up to MAX_CONCURRENT in parallel)
+        bool tokenRefreshed = false;
+        for (size_t batchStart = 0; batchStart < allBatches.size() && !quotaExceeded && running_; ) {
+            size_t launchCount = (std::min)(MAX_CONCURRENT, allBatches.size() - batchStart);
+            std::vector<std::future<bool>> futures;
+
+            // Measure batch group time + size for speed estimation
+            auto batchGroupStart = std::chrono::steady_clock::now();
+            uint64_t batchGroupTotalSize = 0;
+            for (size_t j = 0; j < launchCount; ++j) {
+                for (const auto& p : allBatches[batchStart + j].localPaths) {
+                    try {
+                        batchGroupTotalSize += std::filesystem::file_size(p);
+                    } catch (...) {}
+                }
+            }
+
+            for (size_t j = 0; j < launchCount; ++j) {
+                auto& batch = allBatches[batchStart + j];
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.currentFile = batch.uploadPaths[0] +
+                        (batch.uploadPaths.size() > 1
+                            ? " (+" + std::to_string(batch.uploadPaths.size() - 1) + " more)"
+                            : "");
+                }
+                notifyStatusChange();
+
+                futures.push_back(std::async(std::launch::async,
+                    [this, &batch]() -> bool {
+                        for (int attempt = 0; attempt < 3; ++attempt) {
+                            try {
+                                return httpClient_->uploadFileBatch(
+                                    batch.localPaths, batch.remoteDir);
+                            } catch (const TokenExpiredException&) {
+                                throw; // Don't retry — token refresh needed
+                            } catch (const RateLimitException& rle) {
+                                int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                                Logger::warn("Batch rate limited, waiting {}s ({}/3)",
+                                             waitSec, attempt + 1);
+                                for (int s = 0; s < waitSec && running_.load(); ++s) {
+                                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                                }
+                                if (!running_.load()) return false;
+                            } catch (const QuotaExceededException&) {
+                                throw; // Propagate to main thread via future
+                            }
+                        }
+                        return false;
+                    }
+                ));
+            }
+
+            // Collect results
+            for (size_t j = 0; j < futures.size(); ++j) {
+                auto& batch = allBatches[batchStart + j];
+                bool uploaded = false;
+                bool tokenExpiredBatch = false;
+
+                try {
+                    uploaded = futures[j].get();
+                } catch (const TokenExpiredException&) {
+                    tokenExpiredBatch = true;
+                    if (!tokenRefreshed) {
+                        Logger::info("Token expired during batch upload, attempting refresh...");
+                        std::string refreshToken = CredentialStore::loadToken("refresh_token");
+                        if (!refreshToken.empty()) {
+                            try {
+                                std::string newToken = httpClient_->refreshAccessToken(refreshToken);
+                                CredentialStore::saveToken("access_token", newToken);
+                                Logger::info("Token refreshed, continuing with remaining batches");
+                                tokenRefreshed = true;
+                            } catch (const std::exception& refreshErr) {
+                                Logger::error("Token refresh failed: {}", refreshErr.what());
+                                authenticated_ = false;
+                                if (authRequiredCallback_) authRequiredCallback_();
+                                throw TokenExpiredException();
+                            }
+                        } else {
+                            Logger::error("No refresh token available");
+                            authenticated_ = false;
+                            if (authRequiredCallback_) authRequiredCallback_();
+                            throw TokenExpiredException();
+                        }
+                    }
+                    // Skip failure logging — files aren't truly failed, just token-expired
+                } catch (const QuotaExceededException&) {
+                    if (!quotaExceeded) {
+                        Logger::error("Storage quota exceeded during batch upload — aborting remaining uploads");
+                        database_->logActivity("upload", batch.uploadPaths[0], folder.id,
+                                               "Storage quota exceeded", 0, "failed");
+                        quotaExceeded = true;
+                        quotaExceeded_ = true;
+                        quotaExceededAt_ = std::chrono::steady_clock::now();
+                        if (errorCallback_) {
+                            errorCallback_("Storage quota exceeded. Uploads paused for 10 minutes. "
+                                           "Please free up space on the server or increase your quota.");
+                        }
+                    }
+                } catch (const std::exception& e) {
+                    Logger::error("Batch upload exception: {}", e.what());
+                }
+
+                if (uploaded) {
+                    for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
+                        std::string hash;
+                        for (const auto& change : localChanges) {
+                            if (change.path == batch.uploadPaths[k]) {
+                                hash = change.hash.value_or("");
+                                break;
+                            }
+                        }
+                        if (hash.empty()) {
+                            hash = sha256_file(batch.localPaths[k]);
+                        }
+                        uint64_t fSize = std::filesystem::file_size(batch.localPaths[k]);
+                        auto now = std::chrono::system_clock::to_time_t(
+                            std::chrono::system_clock::now());
+                        std::tm timeInfo;
+                        gmtime_s(&timeInfo, &now);
+                        std::stringstream ss;
+                        ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
+
+                        database_->upsertFileMetadata(
+                            batch.uploadPaths[k], folder.id, fSize, hash, ss.str());
+                        database_->logActivity("upload", batch.uploadPaths[k], folder.id,
+                                               "Uploaded to server (batch)",
+                                               static_cast<int64_t>(fSize), "success");
+                        Logger::info("Uploaded (batch): {}", batch.uploadPaths[k]);
+                    }
+                } else if (!quotaExceeded && !tokenExpiredBatch) {
+                    for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
+                        uint64_t fSize = std::filesystem::exists(batch.localPaths[k])
+                            ? std::filesystem::file_size(batch.localPaths[k]) : 0;
+                        database_->logActivity("upload", batch.uploadPaths[k], folder.id,
+                                               "Batch upload failed",
+                                               static_cast<int64_t>(fSize), "failed");
+                        Logger::error("Batch upload failed: {}", batch.uploadPaths[k]);
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    uint32_t batchSize = static_cast<uint32_t>(batch.uploadPaths.size());
+                    stats_.processedFiles += batchSize;
+                    stats_.pendingUploads = (stats_.pendingUploads >= batchSize)
+                        ? stats_.pendingUploads - batchSize : 0;
+                }
+                notifyStatusChange();
+            }
+
+            // Estimate upload speed from batch group duration
+            auto batchGroupEnd = std::chrono::steady_clock::now();
+            auto batchGroupMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                batchGroupEnd - batchGroupStart).count();
+            if (batchGroupMs > 0 && batchGroupTotalSize > 0) {
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.uploadSpeed = (batchGroupTotalSize * 1000) / static_cast<uint64_t>(batchGroupMs);
+                }
+                notifyStatusChange();
+            }
+
+            batchStart += launchCount;
+        }
+
+        // Upload large files individually with progress tracking (>= 1 MB)
+        for (size_t uploadIdx = 0; uploadIdx < largeFileUploads.size() && !quotaExceeded && running_; ++uploadIdx) {
+            const auto& uploadPath = largeFileUploads[uploadIdx];
+            std::string localPath = folder.localPath + "/" + uploadPath;
+            std::string remotePath = folder.remotePath + "/" + uploadPath;
+
+            uint64_t fileSize = std::filesystem::file_size(localPath);
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.currentFile = uploadPath;
+                stats_.currentFileSize = fileSize;
+                stats_.currentFileTransferred = 0;
+                stats_.currentFilePercent = 0.0;
+            }
+            transferStart_ = std::chrono::steady_clock::now();
+            notifyStatusChange();
+
+            // Progress callback for per-file tracking
+            auto progressCb = [this, lastNotify = std::chrono::steady_clock::time_point{}]
+                               (const TransferProgress& p) mutable {
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.currentFileSize = p.totalBytes;
+                    stats_.currentFileTransferred = p.bytesTransferred;
+                    stats_.currentFilePercent = p.percentage;
+                    auto elapsed = std::chrono::steady_clock::now() - transferStart_;
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+                    if (ms > 0) {
+                        stats_.uploadSpeed = (p.bytesTransferred * 1000) / static_cast<uint64_t>(ms);
+                    }
+                }
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastNotify >= std::chrono::milliseconds(250)) {
+                    lastNotify = now;
+                    notifyStatusChange();
+                }
+            };
+
+            bool uploaded = false;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                try {
+                    if (httpClient_->uploadFile(localPath, remotePath, progressCb)) {
+                        std::string hash;
+                        for (const auto& change : localChanges) {
+                            if (change.path == uploadPath) {
+                                hash = change.hash.value_or("");
+                                break;
+                            }
+                        }
+                        if (hash.empty()) {
+                            hash = sha256_file(localPath);
+                        }
+                        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                        std::tm timeInfo;
+                        gmtime_s(&timeInfo, &now);
+                        std::stringstream ss;
+                        ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
+
+                        database_->beginTransaction();
+                        bool dbOk = database_->upsertFileMetadata(uploadPath, folder.id, fileSize, hash, ss.str());
+                        dbOk = dbOk && database_->logActivity("upload", uploadPath, folder.id,
+                                               "Uploaded to server", static_cast<int64_t>(fileSize), "success");
+                        if (dbOk) {
+                            database_->commitTransaction();
+                        } else {
+                            database_->rollbackTransaction();
+                            Logger::error("DB update failed after upload: {}", uploadPath);
+                        }
+                        Logger::info("Uploaded: {}", uploadPath);
+                        uploaded = true;
+                        break;
+                    } else {
+                        break; // Non-exception failure
+                    }
+                } catch (const TokenExpiredException&) {
+                    Logger::warn("Token expired during large file upload, propagating for refresh");
+                    throw;  // Let withTokenRefresh handle it
+                } catch (const RateLimitException& rle) {
+                    int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                    Logger::warn("Rate limited on upload, waiting {}s before retry ({}/3): {}",
+                                 waitSec, attempt + 1, uploadPath);
+                    for (int i = 0; i < waitSec && running_; ++i) {
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                    if (!running_) break;
+                } catch (const QuotaExceededException&) {
+                    size_t remaining = largeFileUploads.size() - uploadIdx - 1;
+                    Logger::error("Storage quota exceeded — aborting {} remaining uploads", remaining);
+                    database_->logActivity("upload", uploadPath, folder.id,
+                                           "Storage quota exceeded", static_cast<int64_t>(fileSize), "failed");
+                    quotaExceeded = true;
+                    quotaExceeded_ = true;
+                    quotaExceededAt_ = std::chrono::steady_clock::now();
+                    if (errorCallback_) {
+                        errorCallback_("Storage quota exceeded. Uploads paused for 10 minutes. "
+                                       "Please free up space on the server or increase your quota.");
+                    }
+                    break;
+                }
+            }
+
+            if (!uploaded && !quotaExceeded) {
+                database_->logActivity("upload", uploadPath, folder.id,
+                                       "Upload failed", static_cast<int64_t>(fileSize), "failed");
+                Logger::error("Upload failed: {}", uploadPath);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.processedFiles++;
+                if (stats_.pendingUploads > 0) stats_.pendingUploads--;
+                stats_.currentFileSize = 0;
+                stats_.currentFileTransferred = 0;
+                stats_.currentFilePercent = 0.0;
+            }
+            notifyStatusChange();
+        }
+
+        if (quotaExceeded) {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            stats_.pendingUploads = 0;
+        }
+        } // end direction != PULL
+
+        // 7. Handle conflicts based on direction (A2: uses DeltaConflict with BaluHost fields)
+        for (const auto& conflict : delta.conflicts) {
+            if (folder.direction == SyncDirection::PUSH) {
+                // Push mode: local wins — upload our version
+                std::string localPath = folder.localPath + "/" + conflict.path;
+                std::string remotePath = folder.remotePath + "/" + conflict.path;
+                if (std::filesystem::exists(localPath)) {
+                    httpClient_->uploadFile(localPath, remotePath);
+                    Logger::info("Conflict resolved (push, local wins): {}", conflict.path);
+                    database_->logActivity("conflict", conflict.path, folder.id,
+                                           "Auto-resolved: local wins (push mode)", 0, "success");
+                }
+            } else if (folder.direction == SyncDirection::PULL) {
+                // Pull mode: remote wins — download server version
+                std::string localPath = folder.localPath + "/" + conflict.path;
+                std::string remotePath = folder.remotePath + "/" + conflict.path;
+                std::filesystem::path localPathObj(localPath);
+                std::filesystem::create_directories(localPathObj.parent_path());
+                if (httpClient_->downloadFile(remotePath, localPath)) {
+                    database_->upsertFileMetadata(conflict.path, folder.id, 0,
+                                                  conflict.serverHash, conflict.serverModifiedAt);
+                    Logger::info("Conflict resolved (pull, remote wins): {}", conflict.path);
+                    database_->logActivity("conflict", conflict.path, folder.id,
+                                           "Auto-resolved: remote wins (pull mode)", 0, "success");
+                }
+            } else {
+                // Bidirectional: log conflict for resolution per policy
+                Conflict dbConflict;
+                dbConflict.id = database_->generateId();
+                dbConflict.path = conflict.path;
+                dbConflict.folderId = folder.id;
+                dbConflict.localModified = "";
+                dbConflict.remoteModified = conflict.serverModifiedAt;
+                dbConflict.resolution = "pending";
+                database_->logConflict(dbConflict);
+
+                database_->logActivity("conflict", conflict.path, folder.id,
+                                       "Conflict detected (client_hash=" + conflict.clientHash +
+                                       ", server_hash=" + conflict.serverHash + ")", 0, "pending");
+                Logger::warn("Conflict: {} (client_hash={}, server_hash={})",
+                             conflict.path, conflict.clientHash, conflict.serverHash);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.processedFiles++;
+            }
+            notifyStatusChange();
+        }
+
+        // 8. Save change token for next sync
+        if (deltaSyncSucceeded && !delta.changeToken.empty()) {
+            database_->setChangeToken(folder.id, delta.changeToken);
+        }
+
+        // 9. Update last sync timestamp and folder status
+        database_->updateSyncFolderTimestamp(folder.id);
+        database_->updateSyncFolderStatus(folder.id, "idle");
+
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            stats_.status = SyncStatus::IDLE;
+            stats_.currentFile = "";
+            stats_.lastSync = std::to_string(std::time(nullptr));
+            stats_.currentFileSize = 0;
+            stats_.currentFileTransferred = 0;
+            stats_.currentFilePercent = 0.0;
+            stats_.uploadSpeed = 0;
+        }
+        notifyStatusChange();
+
+        Logger::info("Delta sync completed for folder: {}", folder.id);
+
+    } catch (const std::exception& e) {
+        Logger::error("Delta sync failed for folder {}: {}", folder.id, e.what());
+        database_->updateSyncFolderStatus(folder.id, "error");
+        {
+            std::lock_guard<std::mutex> lock(statsMutex_);
+            stats_.status = SyncStatus::SYNC_ERROR;
+            stats_.currentFile = "";
+            stats_.totalFiles = 0;
+            stats_.processedFiles = 0;
+            stats_.pendingDownloads = 0;
+            stats_.pendingUploads = 0;
+            stats_.uploadSpeed = 0;
+            stats_.downloadSpeed = 0;
+            stats_.currentFileSize = 0;
+            stats_.currentFileTransferred = 0;
+            stats_.currentFilePercent = 0.0;
+        }
+        notifyStatusChange();
+        throw;
+    }
 }
 
 SyncStats SyncEngine::getSyncState() const {
@@ -337,7 +1265,7 @@ void SyncEngine::setErrorCallback(ErrorCallback callback) {
 
 void SyncEngine::syncLoop() {
     Logger::info("Sync loop started");
-    
+
     while (running_) {
         try {
             // Process file events from queue
@@ -350,16 +1278,13 @@ void SyncEngine::syncLoop() {
                 }
             }
 
-            // Periodic sync check (every 30 seconds)
-            auto folders = getSyncFolders();
-            for (const auto& folder : folders) {
-                if (folder.enabled && folder.status != SyncStatus::PAUSED) {
-                    fetchRemoteChanges(folder);
-                }
+            // Periodic delta-sync for all active folders
+            if (authenticated_) {
+                triggerSync();
             }
 
             updateStats();
-            
+
         } catch (const std::exception& e) {
             Logger::error("Error in sync loop: " + std::string(e.what()));
             if (errorCallback_) {
@@ -367,24 +1292,32 @@ void SyncEngine::syncLoop() {
             }
         }
 
-        // Sleep for a bit
-        std::this_thread::sleep_for(std::chrono::seconds(30));
+        // Interruptible sleep: 30 x 1s instead of 1 x 30s
+        for (int i = 0; i < 30 && running_; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
-    
+
     Logger::info("Sync loop stopped");
 }
 
 void SyncEngine::processFileEvent(const FileEvent& event) {
     Logger::debug("Processing file event: " + event.path);
-    
+
     // Find which folder this belongs to
     auto folders = getSyncFolders();
     for (const auto& folder : folders) {
         if (event.path.find(folder.localPath) == 0) {
             // File belongs to this sync folder
+            // Skip upload for PULL-only folders
+            if (folder.direction == SyncDirection::PULL) {
+                Logger::debug("Skipping upload for PULL folder: {}", folder.id);
+                break;
+            }
+
             std::string relativePath = event.path.substr(folder.localPath.length());
             std::string remotePath = folder.remotePath + relativePath;
-            
+
             switch (event.action) {
                 case FileAction::CREATED:
                 case FileAction::MODIFIED:
@@ -394,7 +1327,7 @@ void SyncEngine::processFileEvent(const FileEvent& event) {
                     // Handle deletion
                     break;
             }
-            
+
             if (fileChangeCallback_) {
                 fileChangeCallback_(event);
             }
@@ -478,7 +1411,8 @@ void SyncEngine::fetchRemoteChanges(const SyncFolder& folder) {
             Logger::debug("Remote change detected: {} ({})", localPath, remoteChange.action);
             
             if (remoteChange.action == "deleted") {
-                database_->deleteFileMetadata(localPath);
+                // B1: Use folder-scoped delete to prevent cross-folder collisions
+                database_->deleteFileMetadata(localPath, folder.id);
             } else if (remoteChange.action == "created" || remoteChange.action == "modified") {
                 FileMetadata metadata;
                 metadata.path = localPath;
@@ -620,7 +1554,8 @@ void SyncEngine::handleConflict(const std::string& path) {
                     FileMetadata updated = metadata.value();
                     updated.path = resolution.finalPath;
                     database_->upsertFileMetadata(updated);
-                    database_->deleteFileMetadata(path);
+                    // B1: Use folder-scoped delete via conflict's folderId
+                    database_->deleteFileMetadata(path, conflict.folderId);
                 }
             }
         } else {
@@ -634,11 +1569,23 @@ void SyncEngine::handleConflict(const std::string& path) {
 
 // Sprint 3 methods - now active
 void SyncEngine::triggerBidirectionalSync(const std::string& folderId) {
-    Logger::info("Triggering bidirectional sync for folder: " + 
+    if (syncing_.exchange(true)) {
+        Logger::info("Bidirectional sync already in progress, skipping");
+        return;
+    }
+    // RAII guard: resets syncing_ = false on scope exit (normal or exception)
+    SyncGuard guard(syncing_);
+
+    Logger::info("Triggering bidirectional sync for folder: " +
                 (folderId.empty() ? "all" : folderId));
-    
+
+    if (!authenticated_) {
+        Logger::warn("Cannot sync: not authenticated");
+        return;
+    }
+
     auto folders = getSyncFolders();
-    
+
     for (const auto& folder : folders) {
         if (folder.enabled && folder.status != SyncStatus::PAUSED) {
             if (folderId.empty() || folder.id == folderId) {
@@ -757,7 +1704,7 @@ void SyncEngine::handleRemoteChange(const DetectedChange& change, const SyncFold
         case ChangeType::DELETED:
             Logger::info("Deleting local file (remote deleted): " + change.path);
             std::filesystem::remove(localPath);
-            database_->deleteFileMetadata(change.path);
+            database_->deleteFileMetadata(change.path, folder.id);
             break;
     }
 }
@@ -800,8 +1747,8 @@ void SyncEngine::handleLocalChange(const DetectedChange& change, const SyncFolde
             // Use retry logic for delete with exponential backoff
             if (retryWithBackoff([this, &remotePath]() {
                 return httpClient_->deleteFile(remotePath);
-            }, 3, 1000)) {  // 3 retries, starting at 1000ms
-                database_->deleteFileMetadata(change.path);
+            }, 3, 1000)) {
+                database_->deleteFileMetadata(change.path, folder.id);
             } else {
                 Logger::error("Delete failed after retries: {}", change.path);
             }
