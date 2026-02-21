@@ -18,6 +18,11 @@ import signal
 from pathlib import Path
 from typing import List, Optional
 
+# Fix Unicode output on Windows (cp1252 can't handle ✓, 🚀, etc.)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # Color codes for terminal output
 class Colors:
     HEADER = '\033[95m'
