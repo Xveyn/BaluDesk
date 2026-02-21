@@ -20,8 +20,8 @@ export function useServerOnlineStatus(profiles: RemoteServerProfile[], autoRefre
   // Check status of a single server via HTTP health check
   const checkServerStatus = async (profile: RemoteServerProfile): Promise<ServerOnlineStatus> => {
     try {
-      // Construct server URL with HTTP port (8000 for BaluHost)
-      const serverUrl = `http://${profile.sshHost}:8000`;
+      // Construct server URL (BaluHost runs behind nginx on port 80)
+      const serverUrl = `http://${profile.sshHost}`;
       const result = await ipcClient.checkServerHealth(serverUrl);
       
       return {

@@ -1,19 +1,107 @@
 import { useEffect, useState } from 'react';
-import { FolderSync, FolderPlus, Trash2, Settings, CheckCircle, Circle } from 'lucide-react';
+import { FolderSync, FolderPlus, Trash2, Settings, CheckCircle, Circle, Clock, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatSize } from '../../lib/formatters';
 import { BackendMessage, BackendResponse } from '../../lib/types';
+import RemoteFolderBrowser from '../components/RemoteFolderBrowser';
 
 // Type assertion for Electron API
 declare const window: any;
+
+type SyncDirectionType = 'push' | 'pull' | 'bidirectional';
 
 interface SyncFolder {
   id: string;
   localPath: string;
   remotePath: string;
   enabled: boolean;
-  status?: string;  // Add status from backend
-  size?: number;  // Folder size in bytes
+  status?: string;
+  size?: number;
+  lastSync?: string;
+  syncDirection: SyncDirectionType;
+  conflictResolution?: string;
+}
+
+// Format a relative time string from a timestamp
+function formatLastSync(timestamp?: string): string {
+  if (!timestamp) return 'Never';
+
+  // Try parsing as ISO date or unix timestamp
+  let date: Date;
+  if (/^\d+$/.test(timestamp)) {
+    date = new Date(parseInt(timestamp, 10) * 1000);
+  } else {
+    date = new Date(timestamp);
+  }
+
+  if (isNaN(date.getTime())) return 'Never';
+
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHours = Math.floor(diffMin / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSec < 60) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+// Status badge component
+function StatusBadge({ status }: { status?: string }) {
+  switch (status) {
+    case 'syncing':
+      return (
+        <span className="rounded-full px-3 py-1 text-xs font-medium bg-blue-500/20 text-blue-400 animate-pulse">
+          Syncing...
+        </span>
+      );
+    case 'error':
+      return (
+        <span className="rounded-full px-3 py-1 text-xs font-medium bg-red-500/20 text-red-400">
+          Error
+        </span>
+      );
+    case 'paused':
+      return (
+        <span className="rounded-full px-3 py-1 text-xs font-medium bg-slate-700 text-slate-400">
+          Paused
+        </span>
+      );
+    default:
+      return (
+        <span className="rounded-full px-3 py-1 text-xs font-medium bg-green-500/20 text-green-400">
+          Synced
+        </span>
+      );
+  }
+}
+
+// Direction badge component
+function DirectionBadge({ direction }: { direction: SyncDirectionType }) {
+  switch (direction) {
+    case 'push':
+      return (
+        <span className="rounded-full px-2.5 py-0.5 text-xs font-medium bg-violet-500/20 text-violet-400">
+          ↑ Upload
+        </span>
+      );
+    case 'pull':
+      return (
+        <span className="rounded-full px-2.5 py-0.5 text-xs font-medium bg-cyan-500/20 text-cyan-400">
+          ↓ Download
+        </span>
+      );
+    default:
+      return (
+        <span className="rounded-full px-2.5 py-0.5 text-xs font-medium bg-green-500/20 text-green-400">
+          ↕ Sync
+        </span>
+      );
+  }
 }
 
 export default function Sync() {
@@ -21,21 +109,32 @@ export default function Sync() {
   const [loading, setLoading] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<SyncFolder | null>(null);
+  const [syncDirection, setSyncDirection] = useState<SyncDirectionType>('bidirectional');
   const [conflictResolution, setConflictResolution] = useState('ask');
 
+  // Sync trigger states
+  const [syncingAll, setSyncingAll] = useState(false);
+  const [syncingFolders, setSyncingFolders] = useState<Set<string>>(new Set());
+
+  // Remote folder browser state
+  const [showRemoteBrowser, setShowRemoteBrowser] = useState(false);
+  const [pendingLocalPath, setPendingLocalPath] = useState<string | null>(null);
+
   useEffect(() => {
-    // Listen to backend messages
-    window.electronAPI.onBackendMessage((message: BackendMessage) => {
+    // Listen to backend messages — stable reference for targeted cleanup
+    const handleMessage = (message: BackendMessage) => {
       if (message.type === 'sync_folders') {
         setFolders(message.data);
       }
-    });
+    };
+
+    window.electronAPI.onBackendMessage(handleMessage);
 
     // Request initial data
     fetchSyncFolders();
 
     return () => {
-      window.electronAPI.removeBackendListener();
+      window.electronAPI.removeBackendListener(handleMessage);
     };
   }, []);
 
@@ -46,16 +145,17 @@ export default function Sync() {
         type: 'get_folders',
       });
       if (response.success || response.folders) {
-        // Backend returns folders array directly or in response.folders
         const folderData = response.folders || response.data || [];
-        // Transform backend response (snake_case) to match TypeScript interface (camelCase)
         const transformedFolders = folderData.map((folder: any) => ({
           id: folder.id,
           localPath: folder.local_path,
           remotePath: folder.remote_path,
           enabled: folder.enabled,
-          status: folder.status,  // Add status from backend
-          size: folder.size  // Add size from backend in bytes
+          status: folder.status,
+          size: folder.size,
+          lastSync: folder.last_sync,
+          syncDirection: folder.sync_direction || 'bidirectional',
+          conflictResolution: folder.conflict_resolution || 'ask',
         }));
         setFolders(transformedFolders);
       }
@@ -70,37 +170,49 @@ export default function Sync() {
   const handleAddFolder = async () => {
     try {
       const localPath = await window.electronAPI.selectFolder({
-        defaultPath: '', // No default path in browser context
+        defaultPath: '',
       });
 
       if (localPath) {
-        // TODO: Get remote path from user (maybe a dialog)
-        const remotePath = `/synced/${localPath.split('\\').pop() || 'folder'}`;
+        // Store local path and open remote folder browser
+        setPendingLocalPath(localPath);
+        setShowRemoteBrowser(true);
+      }
+    } catch (err) {
+      console.error('Error selecting folder:', err);
+      toast.error('Error selecting folder');
+    }
+  };
 
-        const response: BackendResponse = await window.electronAPI.sendBackendCommand({
-          type: 'add_sync_folder',
-          payload: {
-            local_path: localPath,
-            remote_path: remotePath,
-          }
-        });
+  const handleRemoteSelect = async (remotePath: string, direction: string = 'bidirectional') => {
+    if (!pendingLocalPath) return;
 
-        if (response.success) {
-          toast.success('Folder added successfully');
-          fetchSyncFolders();
-        } else {
-          toast.error(response.error || 'Failed to add folder');
+    try {
+      const response: BackendResponse = await window.electronAPI.sendBackendCommand({
+        type: 'add_sync_folder',
+        payload: {
+          local_path: pendingLocalPath,
+          remote_path: remotePath,
+          sync_direction: direction,
         }
+      });
+
+      if (response.success) {
+        toast.success('Folder added successfully');
+        fetchSyncFolders();
+      } else {
+        toast.error(response.error || 'Failed to add folder');
       }
     } catch (err) {
       console.error('Error adding folder:', err);
       toast.error('Error adding folder');
+    } finally {
+      setPendingLocalPath(null);
     }
   };
 
   const handleToggleFolder = async (folderId: string, enabled: boolean) => {
     try {
-      // Send pause or resume based on current state
       const commandType = enabled ? 'pause_sync' : 'resume_sync';
       const response = await window.electronAPI.sendBackendCommand({
         type: commandType,
@@ -123,7 +235,8 @@ export default function Sync() {
 
   const openFolderSettings = (folder: SyncFolder) => {
     setSelectedFolder(folder);
-    setConflictResolution('ask'); // Default
+    setSyncDirection(folder.syncDirection || 'bidirectional');
+    setConflictResolution(folder.conflictResolution || 'ask');
     setShowSettingsModal(true);
   };
 
@@ -135,6 +248,7 @@ export default function Sync() {
         type: 'update_sync_folder',
         payload: {
           folder_id: selectedFolder.id,
+          sync_direction: syncDirection,
           conflict_resolution: conflictResolution
         }
       });
@@ -175,6 +289,43 @@ export default function Sync() {
     }
   };
 
+  const handleTriggerSync = async (folderId?: string) => {
+    if (folderId) {
+      setSyncingFolders((prev) => new Set(prev).add(folderId));
+    } else {
+      setSyncingAll(true);
+    }
+
+    try {
+      const response: BackendResponse = await window.electronAPI.sendBackendCommand({
+        type: 'trigger_sync',
+        payload: folderId ? { folder_id: folderId } : {},
+      });
+
+      if (response.success) {
+        toast.success(folderId ? 'Sync gestartet' : 'Sync für alle Ordner gestartet');
+      } else {
+        toast.error(response.error || 'Sync konnte nicht gestartet werden');
+      }
+    } catch (err) {
+      console.error('Error triggering sync:', err);
+      toast.error('Error triggering sync');
+    } finally {
+      // Reset spinning state after 2s — actual status comes via events
+      setTimeout(() => {
+        if (folderId) {
+          setSyncingFolders((prev) => {
+            const next = new Set(prev);
+            next.delete(folderId);
+            return next;
+          });
+        } else {
+          setSyncingAll(false);
+        }
+      }, 2000);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Page Header */}
@@ -188,14 +339,24 @@ export default function Sync() {
           </h1>
           <p className="mt-2 text-slate-400">Manage folders to synchronize with your server</p>
         </div>
-        <button
-          onClick={handleAddFolder}
-          disabled={loading}
-          className="flex items-center space-x-2 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-6 py-3 font-medium text-white shadow-lg shadow-blue-500/30 transition-all hover:shadow-xl hover:shadow-blue-500/40 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <FolderPlus className="h-5 w-5" />
-          <span>Add Folder</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => handleTriggerSync()}
+            disabled={folders.length === 0 || syncingAll}
+            className="flex items-center space-x-2 rounded-lg bg-gradient-to-r from-emerald-500 to-emerald-600 px-5 py-3 font-medium text-white shadow-lg shadow-emerald-500/30 transition-all hover:shadow-xl hover:shadow-emerald-500/40 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw className={`h-5 w-5 ${syncingAll ? 'animate-spin' : ''}`} />
+            <span>Sync All</span>
+          </button>
+          <button
+            onClick={handleAddFolder}
+            disabled={loading}
+            className="flex items-center space-x-2 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 px-6 py-3 font-medium text-white shadow-lg shadow-blue-500/30 transition-all hover:shadow-xl hover:shadow-blue-500/40 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <FolderPlus className="h-5 w-5" />
+            <span>Add Folder</span>
+          </button>
+        </div>
       </div>
 
       {/* Folders List */}
@@ -233,30 +394,37 @@ export default function Sync() {
 
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-white break-all">
-                        📁 {folder.localPath}
+                        {folder.localPath}
                       </p>
                       <p className="text-sm text-slate-400 mt-1 break-all">
-                        ☁️ Syncs to: {folder.remotePath}
+                        Syncs to: {folder.remotePath}
                       </p>
-                      <p className="text-xs text-slate-500 mt-2">
-                        📊 Size: {formatSize(folder.size)}
-                      </p>
+                      <div className="flex items-center space-x-4 mt-2">
+                        <span className="text-xs text-slate-500">
+                          Size: {formatSize(folder.size)}
+                        </span>
+                        <span className="text-xs text-slate-500 flex items-center space-x-1">
+                          <Clock className="h-3 w-3" />
+                          <span>Last sync: {formatLastSync(folder.lastSync)}</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Right side: Status badge & Actions */}
+                  {/* Right side: Direction + Status badge & Actions */}
                   <div className="flex items-center space-x-3 flex-shrink-0">
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                        folder.status !== 'paused'
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-slate-700 text-slate-400'
-                      }`}
-                    >
-                      {folder.status === 'paused' ? 'Paused' : 'Active'}
-                    </span>
+                    <DirectionBadge direction={folder.syncDirection} />
+                    <StatusBadge status={folder.status} />
 
                     <div className="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => handleTriggerSync(folder.id)}
+                        disabled={folder.status === 'paused' || syncingFolders.has(folder.id)}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Sync Now"
+                      >
+                        <RefreshCw className={`h-4 w-4 ${syncingFolders.has(folder.id) ? 'animate-spin' : ''}`} />
+                      </button>
                       <button
                         onClick={() => openFolderSettings(folder)}
                         className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors"
@@ -283,9 +451,19 @@ export default function Sync() {
       {/* Info Box */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-4">
         <p className="text-sm text-slate-400">
-          <span className="font-medium text-slate-300">💡 Tip:</span> Only active folders will be synced. Click the circle icon to pause/resume sync for a folder.
+          <span className="font-medium text-slate-300">Tip:</span> Only active folders will be synced. Click the circle icon to pause/resume sync for a folder.
         </p>
       </div>
+
+      {/* Remote Folder Browser Modal */}
+      <RemoteFolderBrowser
+        isOpen={showRemoteBrowser}
+        onClose={() => {
+          setShowRemoteBrowser(false);
+          setPendingLocalPath(null);
+        }}
+        onSelect={handleRemoteSelect}
+      />
 
       {/* Folder Settings Modal */}
       {showSettingsModal && selectedFolder && (
@@ -299,7 +477,35 @@ export default function Sync() {
 
             {/* Content */}
             <div className="p-6 space-y-6">
-              {/* Conflict Resolution */}
+              {/* Sync Direction */}
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-3">
+                  Sync Direction
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: 'push' as SyncDirectionType, label: '↑ Upload', desc: 'Local → NAS' },
+                    { value: 'bidirectional' as SyncDirectionType, label: '↕ Bidirectional', desc: 'Both ways' },
+                    { value: 'pull' as SyncDirectionType, label: '↓ Download', desc: 'NAS → Local' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setSyncDirection(opt.value)}
+                      className={`rounded-lg border px-3 py-2.5 text-center transition-all ${
+                        syncDirection === opt.value
+                          ? 'border-blue-500 bg-blue-500/20 text-blue-300'
+                          : 'border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+                      }`}
+                    >
+                      <div className="text-sm font-medium">{opt.label}</div>
+                      <div className="text-xs mt-0.5 opacity-70">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Conflict Resolution — only for bidirectional */}
+              {syncDirection === 'bidirectional' && (
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
                   Conflict Resolution
@@ -318,6 +524,15 @@ export default function Sync() {
                   Choose what to do when the same file is modified in both locations.
                 </p>
               </div>
+              )}
+
+              {syncDirection !== 'bidirectional' && (
+                <p className="text-xs text-slate-500 bg-slate-800/50 rounded-lg p-3">
+                  {syncDirection === 'push'
+                    ? 'In Upload mode, local files always overwrite the server version. No conflicts possible.'
+                    : 'In Download mode, server files always overwrite the local version. No conflicts possible.'}
+                </p>
+              )}
             </div>
 
             {/* Footer */}

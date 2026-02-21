@@ -18,6 +18,12 @@ interface SyncStats {
   pendingDownloads: number;
   lastSync: string;
   syncFolderCount?: number;
+  currentFile?: string;
+  totalFiles?: number;
+  processedFiles?: number;
+  currentFileSize?: number;
+  currentFileTransferred?: number;
+  currentFilePercent?: number;
 }
 
 interface RaidDevice {
@@ -69,6 +75,7 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
   const [raidStatus, setRaidStatus] = useState<RaidStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [devMode, setDevMode] = useState<'prod' | 'mock'>('prod');
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Helper: Format transfer speed
   const formatSpeed = (bytesPerSecond: number): string => {
@@ -78,20 +85,27 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
   };
 
   useEffect(() => {
-    // Listen to backend messages
-    window.electronAPI.onBackendMessage((message: BackendMessage) => {
-      console.log('Backend message:', message);
-      
+    // Listen to backend messages — stable reference for targeted cleanup
+    const handleMessage = (message: BackendMessage) => {
       // Handle different sync event shapes coming from the backend
       if (message.type === 'sync_stats') {
-        setSyncStats(message.data);
+        setSyncStats(prev => prev ? { ...prev, ...message.data } : message.data);
       } else if (message.type === 'sync_state_update') {
-        // Live broadcast from SyncEngine
-        setSyncStats(message.data);
+        // Live broadcast from SyncEngine — merge to preserve fields like syncFolderCount
+        console.log('[Dashboard] sync_state_update pendingUploads:', message.data?.pendingUploads,
+                    'pendingDownloads:', message.data?.pendingDownloads,
+                    'typeof:', typeof message.data?.pendingUploads);
+        setSyncStats(prev => prev ? { ...prev, ...message.data } : message.data);
+      } else if (message.type === 'sync_error') {
+        // Error event from SyncEngine (e.g. quota exceeded)
+        const errorMsg = message.data?.message || 'Sync error';
+        setSyncError(errorMsg);
+        // Auto-clear after 15 seconds
+        setTimeout(() => setSyncError(null), 15000);
       } else if (message.type === 'sync_state') {
         // Could be a direct event or legacy response forwarded
         if ((message as any).success && (message as any).data) {
-          setSyncStats((message as any).data);
+          setSyncStats(prev => prev ? { ...prev, ...(message as any).data } : (message as any).data);
         } else if ((message as any).status) {
           // Legacy shape
           const legacy = message as any;
@@ -106,16 +120,18 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
           if ((legacy.syncFolderCount ?? legacy.sync_folder_count) !== undefined) {
             (mapped as any).syncFolderCount = legacy.syncFolderCount ?? legacy.sync_folder_count;
           }
-          setSyncStats(mapped);
+          setSyncStats(prev => prev ? { ...prev, ...mapped } : mapped);
         }
       }
-    });
+    };
+
+    window.electronAPI.onBackendMessage(handleMessage);
 
     // Request initial data
     fetchData();
 
     return () => {
-      window.electronAPI.removeBackendListener();
+      window.electronAPI.removeBackendListener(handleMessage);
     };
   }, []);
 
@@ -181,7 +197,7 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
             if ((legacy.syncFolderCount ?? legacy.sync_folder_count) !== undefined) {
               (mapped as any).syncFolderCount = legacy.syncFolderCount ?? legacy.sync_folder_count;
             }
-            setSyncStats(mapped);
+            setSyncStats(prev => prev ? { ...prev, ...mapped } : mapped);
           }
         }
       } catch (err) {
@@ -381,6 +397,75 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
                 </span>
               </div>
             </div>
+
+            {/* Sync Error Banner */}
+            {syncError && (
+              <div className="mt-2 pt-2 border-t border-red-500/30">
+                <div className="rounded-lg bg-red-500/10 border border-red-500/20 p-2">
+                  <p className="text-xs text-red-300">{syncError}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Sync Progress (shown when syncing) */}
+            {syncStats?.status === 'syncing' && (syncStats?.totalFiles ?? 0) > 0 && (
+              <div className="mt-2 pt-2 border-t border-white/10 space-y-2">
+                {/* Overall file progress */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-slate-400">Files</span>
+                  <span className="text-xs text-slate-300">
+                    {syncStats.processedFiles || 0} / {syncStats.totalFiles}
+                  </span>
+                </div>
+                <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300"
+                    style={{
+                      width: `${Math.min(
+                        ((syncStats.processedFiles || 0) / (syncStats.totalFiles || 1)) * 100,
+                        100
+                      )}%`,
+                    }}
+                  />
+                </div>
+
+                {/* Per-file progress (shown when a file is being transferred) */}
+                {syncStats.currentFile && (syncStats.currentFileSize ?? 0) > 0 && (
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-slate-400 truncate max-w-[60%]" title={syncStats.currentFile}>
+                        {syncStats.currentFile}
+                      </p>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs text-slate-300">
+                          {formatBytes(syncStats.currentFileTransferred || 0)} / {formatBytes(syncStats.currentFileSize)}
+                        </span>
+                        {syncStats.uploadSpeed > 0 && (
+                          <span className="text-xs text-emerald-400">
+                            {formatSpeed(syncStats.uploadSpeed)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="h-1 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-150"
+                        style={{
+                          width: `${Math.min(syncStats.currentFilePercent || 0, 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Current file name only (when no size info available) */}
+                {syncStats.currentFile && !(syncStats.currentFileSize && syncStats.currentFileSize > 0) && (
+                  <p className="text-xs text-slate-500 truncate" title={syncStats.currentFile}>
+                    {syncStats.currentFile}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

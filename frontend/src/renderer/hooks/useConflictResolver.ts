@@ -118,7 +118,7 @@ export function useConflictResolver(): UseConflictResolverReturn {
     window.electronAPI.onBackendMessage(handleBackendMessage);
 
     return () => {
-      window.electronAPI.removeBackendListener();
+      window.electronAPI.removeBackendListener(handleBackendMessage);
     };
   }, []);
 
