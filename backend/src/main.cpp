@@ -5,6 +5,7 @@
 #include <iostream>
 #include <csignal>
 #include <atomic>
+#include <curl/curl.h>
 
 using namespace baludesk;
 
@@ -38,6 +39,9 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
+
+    // B2: Initialize libcurl once per process (not thread-safe, must be single-threaded)
+    curl_global_init(CURL_GLOBAL_DEFAULT);
 
     // Initialize logger
     Logger::initialize("baludesk.log", verbose);
@@ -95,5 +99,9 @@ int main(int argc, char* argv[]) {
 
     Logger::info("=== BaluDesk Backend Stopped ===");
     Logger::shutdown();
+
+    // B2: Cleanup libcurl (must be called after all CURL handles are freed)
+    curl_global_cleanup();
+
     return 0;
 }

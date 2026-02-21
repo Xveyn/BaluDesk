@@ -29,11 +29,11 @@ static size_t WriteBinaryCallback(void* contents, size_t size, size_t nmemb, voi
 
 BaluhostClient::BaluhostClient(const std::string& baseUrl)
     : baseUrl_(baseUrl) {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    // B2: curl_global_init moved to main.cpp (must be called once per process)
 }
 
 BaluhostClient::~BaluhostClient() {
-    curl_global_cleanup();
+    // B2: curl_global_cleanup moved to main.cpp
 }
 
 bool BaluhostClient::login(const std::string& username, const std::string& password) {
