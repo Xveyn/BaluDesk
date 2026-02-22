@@ -509,6 +509,14 @@ std::optional<nlohmann::json> BaluhostClient::getPowerMonitoring() {
     return makeRequest("GET", "/api/tapo/power/history");
 }
 
+std::optional<nlohmann::json> BaluhostClient::getNetworkStats() {
+    return makeRequest("GET", "/api/system/network");
+}
+
+std::optional<nlohmann::json> BaluhostClient::getServicesStatus() {
+    return makeRequest("GET", "/api/system/services");
+}
+
 std::string BaluhostClient::getBaseUrl() const {
     return baseUrl_;
 }

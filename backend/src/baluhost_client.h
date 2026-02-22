@@ -66,6 +66,8 @@ public:
     std::optional<nlohmann::json> getSystemInfo();
     std::optional<nlohmann::json> getRaidStatus();
     std::optional<nlohmann::json> getPowerMonitoring();
+    std::optional<nlohmann::json> getNetworkStats();
+    std::optional<nlohmann::json> getServicesStatus();
 
     // Error handling
     std::string getLastError() const;

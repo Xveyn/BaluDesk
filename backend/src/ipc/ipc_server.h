@@ -106,6 +106,10 @@ private:
     // Activity logs
     void handleGetActivityLogs(const nlohmann::json& message, int requestId = -1);
 
+    // Network and services monitoring
+    void handleGetNetworkStats(int requestId = -1);
+    void handleGetServicesStatus(int requestId = -1);
+
     void sendResponse(const nlohmann::json& response, int requestId = -1);
     void sendError(const std::string& error, int requestId = -1);
 

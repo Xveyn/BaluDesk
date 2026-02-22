@@ -114,4 +114,29 @@ PowerMonitoring MockDataProvider::getMockPowerMonitoring() {
     return power;
 }
 
+NetworkStats MockDataProvider::getMockNetworkStats() {
+    Logger::debug("Providing mock network stats (dev-mode)");
+
+    NetworkStats stats;
+    stats.uploadSpeed = 2516582.4;      // ~2.4 MB/s
+    stats.downloadSpeed = 524288.0;     // ~512 KB/s
+    stats.totalUpToday = 858993459;     // ~800 MB
+    stats.totalDownToday = 429496730;   // ~400 MB
+
+    return stats;
+}
+
+std::vector<NasServiceInfo> MockDataProvider::getMockServicesStatus() {
+    Logger::debug("Providing mock services status (dev-mode)");
+
+    std::vector<NasServiceInfo> services;
+    services.push_back({"Samba", "running"});
+    services.push_back({"SSH", "running"});
+    services.push_back({"Nginx", "running"});
+    services.push_back({"WebDAV", "stopped"});
+    services.push_back({"SFTP", "running"});
+
+    return services;
+}
+
 } // namespace baludesk

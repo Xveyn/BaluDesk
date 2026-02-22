@@ -329,6 +329,12 @@ void IpcServer::processMessages() {
             else if (type == "get_activity_logs") {
                 handleGetActivityLogs(message, requestId);
             }
+            else if (type == "get_network_stats") {
+                handleGetNetworkStats(requestId);
+            }
+            else if (type == "get_services_status") {
+                handleGetServicesStatus(requestId);
+            }
             else {
                 Logger::warn("Unknown IPC message type: {}", type);
                 sendError("Unknown command type", requestId);
@@ -1178,6 +1184,121 @@ void IpcServer::handleGetActivityLogs(const json& message, int requestId) {
 
     } catch (const std::exception& e) {
         Logger::error("handleGetActivityLogs error: {}", e.what());
+        sendError(e.what(), requestId);
+    }
+}
+
+// Network stats handler
+void IpcServer::handleGetNetworkStats(int requestId) {
+    try {
+        auto& settings = SettingsManager::getInstance();
+        std::string devMode = settings.getDevMode();
+
+        Logger::debug("Getting network stats (dev-mode: {})", devMode);
+
+        if (devMode == "mock") {
+            auto stats = MockDataProvider::getMockNetworkStats();
+            json response = {
+                {"type", "network_stats"},
+                {"success", true},
+                {"data", {
+                    {"uploadSpeed", stats.uploadSpeed},
+                    {"downloadSpeed", stats.downloadSpeed},
+                    {"totalUpToday", stats.totalUpToday},
+                    {"totalDownToday", stats.totalDownToday}
+                }}
+            };
+            sendResponse(response, requestId);
+        } else {
+            if (!baluhostClient_ || !baluhostClient_->isAuthenticated()) {
+                sendError("Not authenticated with BaluHost server", requestId);
+                return;
+            }
+
+            try {
+                auto response = baluhostClient_->getNetworkStats();
+                if (!response) {
+                    sendError("Failed to fetch network stats from server", requestId);
+                    return;
+                }
+
+                auto& data = *response;
+                json result = {
+                    {"type", "network_stats"},
+                    {"success", true},
+                    {"data", {
+                        {"uploadSpeed", safe_value(data, "upload_speed", 0.0)},
+                        {"downloadSpeed", safe_value(data, "download_speed", 0.0)},
+                        {"totalUpToday", safe_value<uint64_t>(data, "total_up_today", 0)},
+                        {"totalDownToday", safe_value<uint64_t>(data, "total_down_today", 0)}
+                    }}
+                };
+                sendResponse(result, requestId);
+            } catch (const std::exception& e) {
+                sendError(std::string("Failed to fetch network stats: ") + e.what(), requestId);
+            }
+        }
+    } catch (const std::exception& e) {
+        Logger::error("handleGetNetworkStats error: {}", e.what());
+        sendError(e.what(), requestId);
+    }
+}
+
+// Services status handler
+void IpcServer::handleGetServicesStatus(int requestId) {
+    try {
+        auto& settings = SettingsManager::getInstance();
+        std::string devMode = settings.getDevMode();
+
+        Logger::debug("Getting services status (dev-mode: {})", devMode);
+
+        if (devMode == "mock") {
+            auto services = MockDataProvider::getMockServicesStatus();
+            json serviceArray = json::array();
+            for (const auto& svc : services) {
+                serviceArray.push_back({{"name", svc.name}, {"status", svc.status}});
+            }
+            json response = {
+                {"type", "services_status"},
+                {"success", true},
+                {"data", {{"services", serviceArray}}}
+            };
+            sendResponse(response, requestId);
+        } else {
+            if (!baluhostClient_ || !baluhostClient_->isAuthenticated()) {
+                sendError("Not authenticated with BaluHost server", requestId);
+                return;
+            }
+
+            try {
+                auto response = baluhostClient_->getServicesStatus();
+                if (!response) {
+                    sendError("Failed to fetch services status from server", requestId);
+                    return;
+                }
+
+                auto& data = *response;
+                json serviceArray = json::array();
+                if (data.contains("services") && data["services"].is_array()) {
+                    for (const auto& svc : data["services"]) {
+                        serviceArray.push_back({
+                            {"name", safe_value(svc, "name", std::string("unknown"))},
+                            {"status", safe_value(svc, "status", std::string("unknown"))}
+                        });
+                    }
+                }
+                json result = {
+                    {"type", "services_status"},
+                    {"success", true},
+                    {"data", {{"services", serviceArray}}}
+                };
+                sendResponse(result, requestId);
+            } catch (const std::exception& e) {
+                sendError(std::string("Failed to fetch services status: ") + e.what(), requestId);
+            }
+        }
+    } catch (const std::exception& e) {
+        Logger::error("handleGetServicesStatus error: {}", e.what());
         sendError(e.what(), requestId);
     }
 }
