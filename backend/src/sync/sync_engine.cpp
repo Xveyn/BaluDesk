@@ -121,8 +121,41 @@ void SyncEngine::stop() {
         syncThread_.join();
     }
 
+    // Wait for all managed background syncs to finish (prevents use-after-free)
+    {
+        std::lock_guard<std::mutex> lock(pendingSyncsMutex_);
+        for (auto& fut : pendingSyncs_) {
+            if (fut.valid()) {
+                fut.wait();
+            }
+        }
+        pendingSyncs_.clear();
+    }
+
     stats_.status = SyncStatus::IDLE;
     notifyStatusChange();
+}
+
+void SyncEngine::launchManagedSync(const std::string& folderId) {
+    std::lock_guard<std::mutex> lock(pendingSyncsMutex_);
+
+    // Clean up completed futures
+    pendingSyncs_.erase(
+        std::remove_if(pendingSyncs_.begin(), pendingSyncs_.end(),
+            [](const std::future<void>& f) {
+                return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+            }),
+        pendingSyncs_.end()
+    );
+
+    // Launch new managed sync
+    pendingSyncs_.push_back(std::async(std::launch::async, [this, folderId]() {
+        try {
+            triggerSync(folderId);
+        } catch (const std::exception& e) {
+            Logger::error("Background sync failed for folder {}: {}", folderId, e.what());
+        }
+    }));
 }
 
 bool SyncEngine::isRunning() const {
@@ -402,15 +435,8 @@ bool SyncEngine::addSyncFolder(SyncFolder& folder) {
         }
 
         // Trigger initial sync in background (non-blocking)
-        // Using a detached thread avoids blocking the IPC response
         if (running_ && authenticated_) {
-            std::thread([this, folderId = folder.id]() {
-                try {
-                    triggerSync(folderId);
-                } catch (const std::exception& e) {
-                    Logger::error("Initial sync failed for folder {}: {}", folderId, e.what());
-                }
-            }).detach();
+            launchManagedSync(folder.id);
         }
 
         return true;
@@ -448,13 +474,7 @@ bool SyncEngine::resumeSync(const std::string& folderId) {
         fileWatcher_->watch(folder.localPath);
         bool updated = database_->updateSyncFolder(folder);
         if (running_ && authenticated_) {
-            std::thread([this, folderId]() {
-                try {
-                    triggerSync(folderId);
-                } catch (const std::exception& e) {
-                    Logger::error("Resume sync failed for folder {}: {}", folderId, e.what());
-                }
-            }).detach();
+            launchManagedSync(folderId);
         }
         return updated;
     }
@@ -507,7 +527,8 @@ std::vector<SyncFolder> SyncEngine::getSyncFolders() const {
 void SyncEngine::triggerSync(const std::string& folderId) {
     // Prevent concurrent sync runs (auto-loop vs manual trigger)
     if (syncing_.exchange(true)) {
-        Logger::info("Sync already in progress, skipping");
+        Logger::info("Sync already in progress, queuing for later");
+        syncPending_ = true;
         return;
     }
     // RAII guard: resets syncing_ = false on scope exit (normal or exception)
@@ -568,6 +589,7 @@ void SyncEngine::triggerSync(const std::string& folderId) {
             }
         }
     }
+
 }
 
 void SyncEngine::performDeltaSync(const SyncFolder& folder) {
@@ -1399,7 +1421,7 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
 }
 
 SyncStats SyncEngine::getSyncState() const {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(statsMutex_));
+    std::lock_guard<std::mutex> lock(statsMutex_);
     return stats_;
 }
 
@@ -1445,7 +1467,13 @@ void SyncEngine::syncLoop() {
         }
 
         // Interruptible sleep: 30 x 1s instead of 1 x 30s
+        // Break early if a sync was queued while we were running
         for (int i = 0; i < 30 && running_; ++i) {
+            if (syncPending_.load(std::memory_order_relaxed)) {
+                syncPending_ = false;
+                Logger::info("Processing queued sync request (early wakeup)");
+                break;
+            }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
@@ -1944,10 +1972,14 @@ void SyncEngine::notifyStatusChange() {
 }
 
 void SyncEngine::notifyStatusChangeThrottled() {
-    auto now = std::chrono::steady_clock::now();
-    if (now - lastStatusNotify_ >= std::chrono::milliseconds(200)) {
-        lastStatusNotify_ = now;
-        notifyStatusChange();
+    auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t lastMs = lastStatusNotifyMs_.load(std::memory_order_relaxed);
+    if (nowMs - lastMs >= 200) {
+        if (lastStatusNotifyMs_.compare_exchange_weak(lastMs, nowMs,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+            notifyStatusChange();
+        }
     }
 }
 

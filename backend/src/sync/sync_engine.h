@@ -150,6 +150,9 @@ public:
     HttpClient* getHttpClient() const { return httpClient_.get(); }
 
 private:
+    // Managed background sync (replaces detached threads)
+    void launchManagedSync(const std::string& folderId);
+
     // Internal sync loop
     void syncLoop();
     void processFileEvent(const FileEvent& event);
@@ -246,6 +249,10 @@ private:
     std::thread syncThread_;
     std::mutex mutex_;
 
+    // Managed sync threads (replaces detached threads to prevent use-after-free)
+    std::vector<std::future<void>> pendingSyncs_;
+    std::mutex pendingSyncsMutex_;
+
     // Event queue
     std::queue<FileEvent> eventQueue_;
     std::mutex queueMutex_;
@@ -262,7 +269,7 @@ private:
 
     // Stats
     SyncStats stats_;
-    std::mutex statsMutex_;
+    mutable std::mutex statsMutex_;
 
     // Quota backoff: pause uploads for 10 minutes after a 507 error
     std::atomic<bool> quotaExceeded_{false};
@@ -274,11 +281,14 @@ private:
     // Rate-limited activity log cleanup (max once per hour)
     std::chrono::steady_clock::time_point lastLogCleanup_{};
 
-    // Status change throttling (max every 200ms)
-    std::chrono::steady_clock::time_point lastStatusNotify_;
+    // Status change throttling (max every 200ms) — atomic for lock-free access from worker threads
+    std::atomic<int64_t> lastStatusNotifyMs_{0};
 
     // Prevent concurrent sync runs (auto-loop vs manual trigger)
     std::atomic<bool> syncing_{false};
+
+    // Sync queuing: if a sync is requested while one is running, queue it
+    std::atomic<bool> syncPending_{false};
 
     // RAII guard that resets syncing_ flag on scope exit (even on exceptions)
     class SyncGuard {
