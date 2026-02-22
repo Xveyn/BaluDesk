@@ -225,9 +225,13 @@ private:
         }
     }
 
+    // Internal sync folders without size calculation (hot path)
+    std::vector<SyncFolder> getSyncFoldersForSync() const;
+
     // Update stats
     void updateStats();
     void notifyStatusChange();
+    void notifyStatusChangeThrottled();
 
     // Components
     std::unique_ptr<FileWatcher> fileWatcher_;
@@ -269,6 +273,9 @@ private:
 
     // Rate-limited activity log cleanup (max once per hour)
     std::chrono::steady_clock::time_point lastLogCleanup_{};
+
+    // Status change throttling (max every 200ms)
+    std::chrono::steady_clock::time_point lastStatusNotify_;
 
     // Prevent concurrent sync runs (auto-loop vs manual trigger)
     std::atomic<bool> syncing_{false};

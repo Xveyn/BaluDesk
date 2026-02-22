@@ -536,7 +536,7 @@ void SyncEngine::triggerSync(const std::string& folderId) {
         quotaExceeded_ = false;
     }
 
-    auto folders = getSyncFolders();
+    auto folders = getSyncFoldersForSync();
     for (const auto& folder : folders) {
         if (folder.enabled && folder.status != SyncStatus::PAUSED) {
             if (folderId.empty() || folder.id == folderId) {
@@ -612,26 +612,29 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
             }
         }
 
-        // Also include unchanged files from DB so server can do a full comparison
-        auto dbFiles = database_->getFilesInFolder(folder.id);
-        std::unordered_set<std::string> changedPaths;
-        for (const auto& change : localChanges) {
-            changedPaths.insert(change.path);
-        }
-        for (const auto& dbFile : dbFiles) {
-            if (changedPaths.find(dbFile.path) == changedPaths.end()) {
-                FileMetadataEntry entry;
-                entry.path = dbFile.path;
-                entry.hash = dbFile.checksum;
-                entry.size = dbFile.size;
-                entry.modified_at = dbFile.modifiedAt;
-                fileList.push_back(entry);
-            }
-        }
-
         // 3. Send delta-sync request to server
         std::string deviceId = SettingsManager::getInstance().getDeviceId();
         std::string changeToken = database_->getChangeToken(folder.id);
+
+        // Only include full DB file list on first sync (no changeToken).
+        // With changeToken, server already knows the full state — only send changes.
+        if (changeToken.empty()) {
+            auto dbFiles = database_->getFilesInFolder(folder.id);
+            std::unordered_set<std::string> changedPaths;
+            for (const auto& change : localChanges) {
+                changedPaths.insert(change.path);
+            }
+            for (const auto& dbFile : dbFiles) {
+                if (changedPaths.find(dbFile.path) == changedPaths.end()) {
+                    FileMetadataEntry entry;
+                    entry.path = dbFile.path;
+                    entry.hash = dbFile.checksum;
+                    entry.size = dbFile.size;
+                    entry.modified_at = dbFile.modifiedAt;
+                    fileList.push_back(entry);
+                }
+            }
+        }
 
         // Update folder status to syncing
         database_->updateSyncFolderStatus(folder.id, "syncing");
@@ -671,83 +674,131 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
 
         // 4. Process downloads (server has newer versions) — skip for PUSH mode
         if (folder.direction != SyncDirection::PUSH) {
-        for (const auto& remoteFile : delta.toDownload) {
-            if (!running_) break;
 
-            std::string localPath = folder.localPath + "/" + remoteFile.path;
-            std::string remotePath = folder.remotePath + "/" + remoteFile.path;
+        // --- Parallel download pipeline (3 workers) ---
+        if (!delta.toDownload.empty() && running_) {
+            const size_t MAX_CONCURRENT_DOWNLOADS = 3;
 
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.currentFile = remoteFile.path;
-                stats_.currentFileSize = remoteFile.size;
-                stats_.currentFileTransferred = 0;
-                stats_.currentFilePercent = 0.0;
-            }
-            notifyStatusChange();
+            struct DownloadResult {
+                size_t index;
+                bool downloaded;
+                bool tokenExpired;
+            };
 
-            // Create parent directories
-            std::filesystem::path localPathObj(localPath);
-            std::filesystem::create_directories(localPathObj.parent_path());
+            std::atomic<size_t> nextDownloadIndex{0};
+            std::mutex dlResultsMutex;
+            std::vector<DownloadResult> dlResults;
+            std::atomic<bool> dlTokenExpired{false};
 
-            bool downloaded = false;
-            for (int attempt = 0; attempt < 3; ++attempt) {
-                if (!running_) break;
-                try {
-                    if (httpClient_->downloadFile(remotePath, localPath)) {
-                        // C3: Wrap DB updates in transaction for atomicity
-                        database_->beginTransaction();
-                        bool dbOk = database_->upsertFileMetadata(
-                            remoteFile.path, folder.id, remoteFile.size,
-                            remoteFile.hash, remoteFile.modifiedAt
-                        );
-                        dbOk = dbOk && database_->logActivity("download", remoteFile.path, folder.id,
-                                               "Downloaded from server", static_cast<int64_t>(remoteFile.size), "success");
-                        if (dbOk) {
-                            database_->commitTransaction();
-                        } else {
-                            database_->rollbackTransaction();
-                            Logger::error("DB update failed after download: {}", remoteFile.path);
+            auto downloadWorker = [&]() {
+                while (running_.load() && !dlTokenExpired.load()) {
+                    size_t myIndex = nextDownloadIndex.fetch_add(1);
+                    if (myIndex >= delta.toDownload.size()) break;
+
+                    auto& remoteFile = delta.toDownload[myIndex];
+                    std::string dlLocalPath = folder.localPath + "/" + remoteFile.path;
+                    std::string dlRemotePath = folder.remotePath + "/" + remoteFile.path;
+
+                    {
+                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        stats_.currentFile = remoteFile.path;
+                    }
+                    notifyStatusChangeThrottled();
+
+                    // Create parent directories
+                    std::filesystem::path dlLocalPathObj(dlLocalPath);
+                    std::filesystem::create_directories(dlLocalPathObj.parent_path());
+
+                    DownloadResult result{myIndex, false, false};
+
+                    for (int attempt = 0; attempt < 3; ++attempt) {
+                        if (!running_.load() || dlTokenExpired.load()) break;
+                        try {
+                            if (httpClient_->downloadFile(dlRemotePath, dlLocalPath)) {
+                                Logger::info("Downloaded: {}", remoteFile.path);
+                                result.downloaded = true;
+                                break;
+                            }
+                        } catch (const RateLimitException& rle) {
+                            int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                            Logger::warn("Rate limited on download, waiting {}s ({}/3): {}",
+                                         waitSec, attempt + 1, remoteFile.path);
+                            for (int i = 0; i < waitSec && running_.load(); ++i) {
+                                std::this_thread::sleep_for(std::chrono::seconds(1));
+                            }
+                        } catch (const TokenExpiredException&) {
+                            Logger::warn("Token expired during download");
+                            result.tokenExpired = true;
+                            dlTokenExpired.store(true);
+                            break;
+                        } catch (const std::exception& e) {
+                            Logger::error("Download error (attempt {}/3): {} — {}",
+                                          attempt + 1, remoteFile.path, e.what());
+                            if (attempt < 2) {
+                                std::this_thread::sleep_for(std::chrono::seconds(2 * (attempt + 1)));
+                            }
                         }
-                        Logger::info("Downloaded: {}", remoteFile.path);
-                        downloaded = true;
-                        break;
                     }
-                } catch (const RateLimitException& rle) {
-                    int waitSec = (std::min)(rle.retryAfterSeconds, 120);
-                    Logger::warn("Rate limited on download, waiting {}s ({}/3): {}",
-                                 waitSec, attempt + 1, remoteFile.path);
-                    for (int i = 0; i < waitSec && running_; ++i) {
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
+
+                    {
+                        std::lock_guard<std::mutex> rlock(dlResultsMutex);
+                        dlResults.push_back(result);
                     }
-                    if (!running_) break;
-                } catch (const TokenExpiredException&) {
-                    Logger::warn("Token expired during download, propagating for refresh");
-                    throw;  // Let withTokenRefresh handle it
-                } catch (const std::exception& e) {
-                    Logger::error("Download error (attempt {}/3): {} — {}",
-                                  attempt + 1, remoteFile.path, e.what());
-                    if (attempt < 2) {
-                        std::this_thread::sleep_for(std::chrono::seconds(2 * (attempt + 1)));
+
+                    {
+                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        stats_.processedFiles++;
+                        if (stats_.pendingDownloads > 0) stats_.pendingDownloads--;
                     }
+                    notifyStatusChangeThrottled();
+                }
+            };
+
+            // Launch download workers
+            size_t dlWorkerCount = (std::min)(MAX_CONCURRENT_DOWNLOADS, delta.toDownload.size());
+            std::vector<std::thread> dlWorkers;
+            for (size_t w = 0; w < dlWorkerCount; ++w) {
+                dlWorkers.emplace_back(downloadWorker);
+            }
+            for (auto& t : dlWorkers) {
+                t.join();
+            }
+
+            // DB updates in batch transaction (main thread for thread safety)
+            database_->beginTransaction();
+            bool anyDlTokenExpired = false;
+            for (const auto& result : dlResults) {
+                auto& remoteFile = delta.toDownload[result.index];
+                if (result.tokenExpired) {
+                    anyDlTokenExpired = true;
+                }
+                if (result.downloaded) {
+                    // Get local mtime after download
+                    std::string dlLocalPath = folder.localPath + "/" + remoteFile.path;
+                    std::string localMtime;
+                    try {
+                        auto mtime = std::filesystem::last_write_time(dlLocalPath);
+                        auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            mtime.time_since_epoch()).count();
+                        localMtime = std::to_string(mtimeMs);
+                    } catch (...) {}
+
+                    database_->upsertFileMetadata(
+                        remoteFile.path, folder.id, remoteFile.size,
+                        remoteFile.hash, remoteFile.modifiedAt, localMtime
+                    );
+                    database_->logActivity("download", remoteFile.path, folder.id,
+                                           "Downloaded from server", static_cast<int64_t>(remoteFile.size), "success");
+                } else if (!result.tokenExpired) {
+                    database_->logActivity("download", remoteFile.path, folder.id,
+                                           "Download failed after 3 attempts", static_cast<int64_t>(remoteFile.size), "failed");
                 }
             }
+            database_->commitTransaction();
 
-            if (!downloaded && running_) {
-                database_->logActivity("download", remoteFile.path, folder.id,
-                                       "Download failed after 3 attempts", static_cast<int64_t>(remoteFile.size), "failed");
-                Logger::error("Download failed after 3 attempts: {}", remoteFile.path);
+            if (anyDlTokenExpired) {
+                throw TokenExpiredException();
             }
-
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.processedFiles++;
-                if (stats_.pendingDownloads > 0) stats_.pendingDownloads--;
-                stats_.currentFileSize = 0;
-                stats_.currentFileTransferred = 0;
-                stats_.currentFilePercent = 0.0;
-            }
-            notifyStatusChange();
         }
 
         // 5. Process deletions (server deleted these files) — also skip for PUSH mode
@@ -760,7 +811,7 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
                 std::lock_guard<std::mutex> lock(statsMutex_);
                 stats_.currentFile = deletePath;
             }
-            notifyStatusChange();
+            notifyStatusChangeThrottled();
 
             try {
                 if (std::filesystem::exists(localPath)) {
@@ -780,7 +831,7 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
                 std::lock_guard<std::mutex> lock(statsMutex_);
                 stats_.processedFiles++;
             }
-            notifyStatusChange();
+            notifyStatusChangeThrottled();
         }
         } // end direction != PUSH
 
@@ -790,8 +841,10 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
 
         // --- Batch Upload: Group small files by directory, large files individually ---
         const uint64_t BATCH_SIZE_THRESHOLD = 1024 * 1024; // 1 MB
-        const size_t MAX_BATCH_FILES = 20;
-        const size_t MAX_CONCURRENT = 2;
+        const size_t MAX_BATCH_FILES = 50;
+        const uint64_t MAX_BATCH_SIZE_BYTES = 50ULL * 1024 * 1024; // 50 MB
+        const size_t MAX_CONCURRENT = 4;
+        const size_t MAX_CONCURRENT_LARGE = 2;
 
         struct BatchJob {
             std::string remoteDir;
@@ -840,45 +893,72 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
             }
         }
 
-        // Split into chunks of max MAX_BATCH_FILES
+        // Split into chunks of max MAX_BATCH_FILES or MAX_BATCH_SIZE_BYTES
         std::vector<BatchJob> allBatches;
         for (auto& [dir, batch] : batchesByDir) {
-            for (size_t i = 0; i < batch.localPaths.size(); i += MAX_BATCH_FILES) {
-                BatchJob chunk;
-                chunk.remoteDir = batch.remoteDir;
-                size_t end = (std::min)(i + MAX_BATCH_FILES, batch.localPaths.size());
-                chunk.localPaths.assign(batch.localPaths.begin() + i, batch.localPaths.begin() + end);
-                chunk.uploadPaths.assign(batch.uploadPaths.begin() + i, batch.uploadPaths.begin() + end);
-                allBatches.push_back(std::move(chunk));
+            BatchJob currentChunk;
+            currentChunk.remoteDir = batch.remoteDir;
+            uint64_t currentChunkSize = 0;
+
+            for (size_t i = 0; i < batch.localPaths.size(); ++i) {
+                uint64_t fSize = 0;
+                try { fSize = std::filesystem::file_size(batch.localPaths[i]); } catch (...) {}
+
+                // Start a new chunk if adding this file would exceed limits
+                if (!currentChunk.localPaths.empty() &&
+                    (currentChunk.localPaths.size() >= MAX_BATCH_FILES ||
+                     currentChunkSize + fSize > MAX_BATCH_SIZE_BYTES)) {
+                    allBatches.push_back(std::move(currentChunk));
+                    currentChunk = BatchJob{};
+                    currentChunk.remoteDir = batch.remoteDir;
+                    currentChunkSize = 0;
+                }
+
+                currentChunk.localPaths.push_back(batch.localPaths[i]);
+                currentChunk.uploadPaths.push_back(batch.uploadPaths[i]);
+                currentChunkSize += fSize;
+            }
+
+            if (!currentChunk.localPaths.empty()) {
+                allBatches.push_back(std::move(currentChunk));
             }
         }
 
         {
             size_t smallFileCount = 0;
             for (const auto& b : allBatches) smallFileCount += b.localPaths.size();
-            Logger::info("Upload plan: {} batches ({} small files), {} large files",
-                         allBatches.size(), smallFileCount, largeFileUploads.size());
+            Logger::info("Upload plan: {} batches ({} small files), {} large files, {} workers",
+                         allBatches.size(), smallFileCount, largeFileUploads.size(), MAX_CONCURRENT);
         }
 
-        // Upload batches (up to MAX_CONCURRENT in parallel)
-        bool tokenRefreshed = false;
-        for (size_t batchStart = 0; batchStart < allBatches.size() && !quotaExceeded && running_; ) {
-            size_t launchCount = (std::min)(MAX_CONCURRENT, allBatches.size() - batchStart);
-            std::vector<std::future<bool>> futures;
+        // --- Sliding-Window Pipeline: Worker threads pull from shared queue ---
+        std::atomic<bool> tokenRefreshed{false};
+        std::atomic<bool> pipelineQuotaExceeded{false};
+        std::mutex tokenRefreshMutex;  // Only one worker refreshes at a time
 
-            // Measure batch group time + size for speed estimation
-            auto batchGroupStart = std::chrono::steady_clock::now();
-            uint64_t batchGroupTotalSize = 0;
-            for (size_t j = 0; j < launchCount; ++j) {
-                for (const auto& p : allBatches[batchStart + j].localPaths) {
-                    try {
-                        batchGroupTotalSize += std::filesystem::file_size(p);
-                    } catch (...) {}
-                }
-            }
+        // Batch result info for post-processing
+        struct BatchResult {
+            size_t batchIndex;
+            bool uploaded;
+            bool tokenExpired;
+            bool quotaHit;
+        };
 
-            for (size_t j = 0; j < launchCount; ++j) {
-                auto& batch = allBatches[batchStart + j];
+        std::mutex resultsMutex;
+        std::vector<BatchResult> batchResults;
+
+        // Shared queue index (atomic counter for lock-free distribution)
+        std::atomic<size_t> nextBatchIndex{0};
+
+        auto batchWorker = [&]() {
+            while (running_.load() && !pipelineQuotaExceeded.load()) {
+                // Grab next batch atomically
+                size_t myIndex = nextBatchIndex.fetch_add(1);
+                if (myIndex >= allBatches.size()) break;
+
+                auto& batch = allBatches[myIndex];
+                BatchResult result{myIndex, false, false, false};
+
                 {
                     std::lock_guard<std::mutex> lock(statsMutex_);
                     stats_.currentFile = batch.uploadPaths[0] +
@@ -888,69 +968,298 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
                 }
                 notifyStatusChange();
 
-                futures.push_back(std::async(std::launch::async,
-                    [this, &batch]() -> bool {
-                        for (int attempt = 0; attempt < 3; ++attempt) {
-                            try {
-                                return httpClient_->uploadFileBatch(
-                                    batch.localPaths, batch.remoteDir);
-                            } catch (const TokenExpiredException&) {
-                                throw; // Don't retry — token refresh needed
-                            } catch (const RateLimitException& rle) {
-                                int waitSec = (std::min)(rle.retryAfterSeconds, 120);
-                                Logger::warn("Batch rate limited, waiting {}s ({}/3)",
-                                             waitSec, attempt + 1);
-                                for (int s = 0; s < waitSec && running_.load(); ++s) {
-                                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                // Try upload with retries
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    if (!running_.load() || pipelineQuotaExceeded.load()) break;
+                    try {
+                        result.uploaded = httpClient_->uploadFileBatch(
+                            batch.localPaths, batch.remoteDir);
+                        break;
+                    } catch (const TokenExpiredException&) {
+                        result.tokenExpired = true;
+                        // Try to refresh token (only one worker does this)
+                        std::lock_guard<std::mutex> tlock(tokenRefreshMutex);
+                        if (!tokenRefreshed.load()) {
+                            Logger::info("Token expired during batch upload, attempting refresh...");
+                            std::string refreshToken = CredentialStore::loadToken("refresh_token");
+                            if (!refreshToken.empty()) {
+                                try {
+                                    std::string newToken = httpClient_->refreshAccessToken(refreshToken);
+                                    CredentialStore::saveToken("access_token", newToken);
+                                    Logger::info("Token refreshed, continuing pipeline");
+                                    tokenRefreshed.store(true);
+                                    // Retry this batch with new token
+                                    result.tokenExpired = false;
+                                    continue;
+                                } catch (const std::exception& refreshErr) {
+                                    Logger::error("Token refresh failed: {}", refreshErr.what());
                                 }
-                                if (!running_.load()) return false;
-                            } catch (const QuotaExceededException&) {
-                                throw; // Propagate to main thread via future
-                            }
-                        }
-                        return false;
-                    }
-                ));
-            }
-
-            // Collect results
-            for (size_t j = 0; j < futures.size(); ++j) {
-                auto& batch = allBatches[batchStart + j];
-                bool uploaded = false;
-                bool tokenExpiredBatch = false;
-
-                try {
-                    uploaded = futures[j].get();
-                } catch (const TokenExpiredException&) {
-                    tokenExpiredBatch = true;
-                    if (!tokenRefreshed) {
-                        Logger::info("Token expired during batch upload, attempting refresh...");
-                        std::string refreshToken = CredentialStore::loadToken("refresh_token");
-                        if (!refreshToken.empty()) {
-                            try {
-                                std::string newToken = httpClient_->refreshAccessToken(refreshToken);
-                                CredentialStore::saveToken("access_token", newToken);
-                                Logger::info("Token refreshed, continuing with remaining batches");
-                                tokenRefreshed = true;
-                            } catch (const std::exception& refreshErr) {
-                                Logger::error("Token refresh failed: {}", refreshErr.what());
-                                authenticated_ = false;
-                                if (authRequiredCallback_) authRequiredCallback_();
-                                throw TokenExpiredException();
                             }
                         } else {
-                            Logger::error("No refresh token available");
-                            authenticated_ = false;
-                            if (authRequiredCallback_) authRequiredCallback_();
-                            throw TokenExpiredException();
+                            // Another worker already refreshed — retry
+                            result.tokenExpired = false;
+                            continue;
+                        }
+                        break;
+                    } catch (const RateLimitException& rle) {
+                        int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                        Logger::warn("Batch rate limited, waiting {}s ({}/3)",
+                                     waitSec, attempt + 1);
+                        for (int s = 0; s < waitSec && running_.load(); ++s) {
+                            std::this_thread::sleep_for(std::chrono::seconds(1));
+                        }
+                    } catch (const QuotaExceededException&) {
+                        result.quotaHit = true;
+                        pipelineQuotaExceeded.store(true);
+                        break;
+                    }
+                }
+
+                // Store result
+                {
+                    std::lock_guard<std::mutex> rlock(resultsMutex);
+                    batchResults.push_back(result);
+                }
+            }
+        };
+
+        // Launch worker threads
+        auto pipelineStart = std::chrono::steady_clock::now();
+        uint64_t pipelineTotalSize = 0;
+        for (const auto& b : allBatches) {
+            for (const auto& p : b.localPaths) {
+                try { pipelineTotalSize += std::filesystem::file_size(p); } catch (...) {}
+            }
+        }
+
+        {
+            size_t workerCount = (std::min)(MAX_CONCURRENT, allBatches.size());
+            std::vector<std::thread> workers;
+            for (size_t w = 0; w < workerCount; ++w) {
+                workers.emplace_back(batchWorker);
+            }
+            for (auto& t : workers) {
+                t.join();
+            }
+        }
+
+        // Process batch results (DB updates on main thread for thread safety)
+        // Wrap all DB writes in a single transaction for performance
+        database_->beginTransaction();
+        bool anyTokenExpiredUnrecoverable = false;
+        for (const auto& result : batchResults) {
+            auto& batch = allBatches[result.batchIndex];
+
+            if (result.quotaHit && !quotaExceeded) {
+                Logger::error("Storage quota exceeded during batch upload — aborting remaining uploads");
+                database_->logActivity("upload", batch.uploadPaths[0], folder.id,
+                                       "Storage quota exceeded", 0, "failed");
+                quotaExceeded = true;
+                quotaExceeded_ = true;
+                quotaExceededAt_ = std::chrono::steady_clock::now();
+                if (errorCallback_) {
+                    errorCallback_("Storage quota exceeded. Uploads paused for 10 minutes. "
+                                   "Please free up space on the server or increase your quota.");
+                }
+            }
+
+            if (result.tokenExpired && !tokenRefreshed.load()) {
+                anyTokenExpiredUnrecoverable = true;
+            }
+
+            if (result.uploaded) {
+                for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
+                    std::string hash;
+                    for (const auto& change : localChanges) {
+                        if (change.path == batch.uploadPaths[k]) {
+                            hash = change.hash.value_or("");
+                            break;
                         }
                     }
-                    // Skip failure logging — files aren't truly failed, just token-expired
-                } catch (const QuotaExceededException&) {
+                    if (hash.empty()) {
+                        hash = sha256_file(batch.localPaths[k]);
+                    }
+                    uint64_t fSize = std::filesystem::file_size(batch.localPaths[k]);
+                    auto now = std::chrono::system_clock::to_time_t(
+                        std::chrono::system_clock::now());
+                    std::tm timeInfo;
+                    gmtime_s(&timeInfo, &now);
+                    std::stringstream ss;
+                    ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
+
+                    // Get local mtime for mtime-based change detection
+                    std::string localMtime;
+                    try {
+                        auto mtime = std::filesystem::last_write_time(batch.localPaths[k]);
+                        auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            mtime.time_since_epoch()).count();
+                        localMtime = std::to_string(mtimeMs);
+                    } catch (...) {}
+
+                    database_->upsertFileMetadata(
+                        batch.uploadPaths[k], folder.id, fSize, hash, ss.str(), localMtime);
+                    database_->logActivity("upload", batch.uploadPaths[k], folder.id,
+                                           "Uploaded to server (batch)",
+                                           static_cast<int64_t>(fSize), "success");
+                    Logger::info("Uploaded (batch): {}", batch.uploadPaths[k]);
+                }
+            } else if (!quotaExceeded && !result.tokenExpired) {
+                for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
+                    uint64_t fSize = std::filesystem::exists(batch.localPaths[k])
+                        ? std::filesystem::file_size(batch.localPaths[k]) : 0;
+                    database_->logActivity("upload", batch.uploadPaths[k], folder.id,
+                                           "Batch upload failed",
+                                           static_cast<int64_t>(fSize), "failed");
+                    Logger::error("Batch upload failed: {}", batch.uploadPaths[k]);
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                uint32_t batchSize = static_cast<uint32_t>(batch.uploadPaths.size());
+                stats_.processedFiles += batchSize;
+                stats_.pendingUploads = (stats_.pendingUploads >= batchSize)
+                    ? stats_.pendingUploads - batchSize : 0;
+            }
+            notifyStatusChangeThrottled();
+        }
+        database_->commitTransaction();
+
+        if (anyTokenExpiredUnrecoverable) {
+            authenticated_ = false;
+            if (authRequiredCallback_) authRequiredCallback_();
+            throw TokenExpiredException();
+        }
+
+        // Estimate upload speed from pipeline duration
+        auto pipelineEnd = std::chrono::steady_clock::now();
+        auto pipelineMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            pipelineEnd - pipelineStart).count();
+        if (pipelineMs > 0 && pipelineTotalSize > 0) {
+            {
+                std::lock_guard<std::mutex> lock(statsMutex_);
+                stats_.uploadSpeed = (pipelineTotalSize * 1000) / static_cast<uint64_t>(pipelineMs);
+            }
+            notifyStatusChange();
+        }
+
+        // --- Large files: Sliding-window with MAX_CONCURRENT_LARGE workers ---
+        std::atomic<size_t> nextLargeIndex{0};
+
+        auto largeFileWorker = [&]() {
+            while (running_.load() && !pipelineQuotaExceeded.load()) {
+                size_t myIndex = nextLargeIndex.fetch_add(1);
+                if (myIndex >= largeFileUploads.size()) break;
+
+                const auto& uploadPath = largeFileUploads[myIndex];
+                std::string localPath = folder.localPath + "/" + uploadPath;
+                std::string remotePath = folder.remotePath + "/" + uploadPath;
+
+                uint64_t fileSize = std::filesystem::file_size(localPath);
+
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.currentFile = uploadPath;
+                    stats_.currentFileSize = fileSize;
+                    stats_.currentFileTransferred = 0;
+                    stats_.currentFilePercent = 0.0;
+                }
+                auto workerTransferStart = std::chrono::steady_clock::now();
+                notifyStatusChange();
+
+                // Progress callback for per-file tracking
+                auto progressCb = [this, workerTransferStart, lastNotify = std::chrono::steady_clock::time_point{}]
+                                   (const TransferProgress& p) mutable {
+                    {
+                        std::lock_guard<std::mutex> lock(statsMutex_);
+                        stats_.currentFileSize = p.totalBytes;
+                        stats_.currentFileTransferred = p.bytesTransferred;
+                        stats_.currentFilePercent = p.percentage;
+                        auto elapsed = std::chrono::steady_clock::now() - workerTransferStart;
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+                        if (ms > 0) {
+                            stats_.uploadSpeed = (p.bytesTransferred * 1000) / static_cast<uint64_t>(ms);
+                        }
+                    }
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - lastNotify >= std::chrono::milliseconds(250)) {
+                        lastNotify = now;
+                        notifyStatusChange();
+                    }
+                };
+
+                bool uploaded = false;
+                bool quotaHit = false;
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                    if (!running_.load() || pipelineQuotaExceeded.load()) break;
+                    try {
+                        if (httpClient_->uploadFile(localPath, remotePath, progressCb)) {
+                            uploaded = true;
+                            break;
+                        } else {
+                            break; // Non-exception failure
+                        }
+                    } catch (const TokenExpiredException&) {
+                        Logger::warn("Token expired during large file upload, propagating for refresh");
+                        throw;  // Let withTokenRefresh handle it
+                    } catch (const RateLimitException& rle) {
+                        int waitSec = (std::min)(rle.retryAfterSeconds, 120);
+                        Logger::warn("Rate limited on upload, waiting {}s before retry ({}/3): {}",
+                                     waitSec, attempt + 1, uploadPath);
+                        for (int s = 0; s < waitSec && running_.load(); ++s) {
+                            std::this_thread::sleep_for(std::chrono::seconds(1));
+                        }
+                    } catch (const QuotaExceededException&) {
+                        size_t remaining = largeFileUploads.size() - myIndex - 1;
+                        Logger::error("Storage quota exceeded — aborting {} remaining uploads", remaining);
+                        quotaHit = true;
+                        pipelineQuotaExceeded.store(true);
+                        break;
+                    }
+                }
+
+                // DB updates for large files (safe: each worker handles distinct files)
+                if (uploaded) {
+                    std::string hash;
+                    for (const auto& change : localChanges) {
+                        if (change.path == uploadPath) {
+                            hash = change.hash.value_or("");
+                            break;
+                        }
+                    }
+                    if (hash.empty()) {
+                        hash = sha256_file(localPath);
+                    }
+                    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    std::tm timeInfo;
+                    gmtime_s(&timeInfo, &now);
+                    std::stringstream ss;
+                    ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
+
+                    // Get local mtime for mtime-based change detection
+                    std::string localMtime;
+                    try {
+                        auto mtime = std::filesystem::last_write_time(localPath);
+                        auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            mtime.time_since_epoch()).count();
+                        localMtime = std::to_string(mtimeMs);
+                    } catch (...) {}
+
+                    database_->beginTransaction();
+                    bool dbOk = database_->upsertFileMetadata(uploadPath, folder.id, fileSize, hash, ss.str(), localMtime);
+                    dbOk = dbOk && database_->logActivity("upload", uploadPath, folder.id,
+                                           "Uploaded to server", static_cast<int64_t>(fileSize), "success");
+                    if (dbOk) {
+                        database_->commitTransaction();
+                    } else {
+                        database_->rollbackTransaction();
+                        Logger::error("DB update failed after upload: {}", uploadPath);
+                    }
+                    Logger::info("Uploaded: {}", uploadPath);
+                } else if (quotaHit) {
+                    database_->logActivity("upload", uploadPath, folder.id,
+                                           "Storage quota exceeded", static_cast<int64_t>(fileSize), "failed");
                     if (!quotaExceeded) {
-                        Logger::error("Storage quota exceeded during batch upload — aborting remaining uploads");
-                        database_->logActivity("upload", batch.uploadPaths[0], folder.id,
-                                               "Storage quota exceeded", 0, "failed");
                         quotaExceeded = true;
                         quotaExceeded_ = true;
                         quotaExceededAt_ = std::chrono::steady_clock::now();
@@ -959,190 +1268,33 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
                                            "Please free up space on the server or increase your quota.");
                         }
                     }
-                } catch (const std::exception& e) {
-                    Logger::error("Batch upload exception: {}", e.what());
-                }
-
-                if (uploaded) {
-                    for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
-                        std::string hash;
-                        for (const auto& change : localChanges) {
-                            if (change.path == batch.uploadPaths[k]) {
-                                hash = change.hash.value_or("");
-                                break;
-                            }
-                        }
-                        if (hash.empty()) {
-                            hash = sha256_file(batch.localPaths[k]);
-                        }
-                        uint64_t fSize = std::filesystem::file_size(batch.localPaths[k]);
-                        auto now = std::chrono::system_clock::to_time_t(
-                            std::chrono::system_clock::now());
-                        std::tm timeInfo;
-                        gmtime_s(&timeInfo, &now);
-                        std::stringstream ss;
-                        ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
-
-                        database_->upsertFileMetadata(
-                            batch.uploadPaths[k], folder.id, fSize, hash, ss.str());
-                        database_->logActivity("upload", batch.uploadPaths[k], folder.id,
-                                               "Uploaded to server (batch)",
-                                               static_cast<int64_t>(fSize), "success");
-                        Logger::info("Uploaded (batch): {}", batch.uploadPaths[k]);
-                    }
-                } else if (!quotaExceeded && !tokenExpiredBatch) {
-                    for (size_t k = 0; k < batch.uploadPaths.size(); ++k) {
-                        uint64_t fSize = std::filesystem::exists(batch.localPaths[k])
-                            ? std::filesystem::file_size(batch.localPaths[k]) : 0;
-                        database_->logActivity("upload", batch.uploadPaths[k], folder.id,
-                                               "Batch upload failed",
-                                               static_cast<int64_t>(fSize), "failed");
-                        Logger::error("Batch upload failed: {}", batch.uploadPaths[k]);
-                    }
-                }
-
-                {
-                    std::lock_guard<std::mutex> lock(statsMutex_);
-                    uint32_t batchSize = static_cast<uint32_t>(batch.uploadPaths.size());
-                    stats_.processedFiles += batchSize;
-                    stats_.pendingUploads = (stats_.pendingUploads >= batchSize)
-                        ? stats_.pendingUploads - batchSize : 0;
-                }
-                notifyStatusChange();
-            }
-
-            // Estimate upload speed from batch group duration
-            auto batchGroupEnd = std::chrono::steady_clock::now();
-            auto batchGroupMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                batchGroupEnd - batchGroupStart).count();
-            if (batchGroupMs > 0 && batchGroupTotalSize > 0) {
-                {
-                    std::lock_guard<std::mutex> lock(statsMutex_);
-                    stats_.uploadSpeed = (batchGroupTotalSize * 1000) / static_cast<uint64_t>(batchGroupMs);
-                }
-                notifyStatusChange();
-            }
-
-            batchStart += launchCount;
-        }
-
-        // Upload large files individually with progress tracking (>= 1 MB)
-        for (size_t uploadIdx = 0; uploadIdx < largeFileUploads.size() && !quotaExceeded && running_; ++uploadIdx) {
-            const auto& uploadPath = largeFileUploads[uploadIdx];
-            std::string localPath = folder.localPath + "/" + uploadPath;
-            std::string remotePath = folder.remotePath + "/" + uploadPath;
-
-            uint64_t fileSize = std::filesystem::file_size(localPath);
-
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.currentFile = uploadPath;
-                stats_.currentFileSize = fileSize;
-                stats_.currentFileTransferred = 0;
-                stats_.currentFilePercent = 0.0;
-            }
-            transferStart_ = std::chrono::steady_clock::now();
-            notifyStatusChange();
-
-            // Progress callback for per-file tracking
-            auto progressCb = [this, lastNotify = std::chrono::steady_clock::time_point{}]
-                               (const TransferProgress& p) mutable {
-                {
-                    std::lock_guard<std::mutex> lock(statsMutex_);
-                    stats_.currentFileSize = p.totalBytes;
-                    stats_.currentFileTransferred = p.bytesTransferred;
-                    stats_.currentFilePercent = p.percentage;
-                    auto elapsed = std::chrono::steady_clock::now() - transferStart_;
-                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-                    if (ms > 0) {
-                        stats_.uploadSpeed = (p.bytesTransferred * 1000) / static_cast<uint64_t>(ms);
-                    }
-                }
-                auto now = std::chrono::steady_clock::now();
-                if (now - lastNotify >= std::chrono::milliseconds(250)) {
-                    lastNotify = now;
-                    notifyStatusChange();
-                }
-            };
-
-            bool uploaded = false;
-            for (int attempt = 0; attempt < 3; ++attempt) {
-                try {
-                    if (httpClient_->uploadFile(localPath, remotePath, progressCb)) {
-                        std::string hash;
-                        for (const auto& change : localChanges) {
-                            if (change.path == uploadPath) {
-                                hash = change.hash.value_or("");
-                                break;
-                            }
-                        }
-                        if (hash.empty()) {
-                            hash = sha256_file(localPath);
-                        }
-                        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-                        std::tm timeInfo;
-                        gmtime_s(&timeInfo, &now);
-                        std::stringstream ss;
-                        ss << std::put_time(&timeInfo, "%Y-%m-%dT%H:%M:%SZ");
-
-                        database_->beginTransaction();
-                        bool dbOk = database_->upsertFileMetadata(uploadPath, folder.id, fileSize, hash, ss.str());
-                        dbOk = dbOk && database_->logActivity("upload", uploadPath, folder.id,
-                                               "Uploaded to server", static_cast<int64_t>(fileSize), "success");
-                        if (dbOk) {
-                            database_->commitTransaction();
-                        } else {
-                            database_->rollbackTransaction();
-                            Logger::error("DB update failed after upload: {}", uploadPath);
-                        }
-                        Logger::info("Uploaded: {}", uploadPath);
-                        uploaded = true;
-                        break;
-                    } else {
-                        break; // Non-exception failure
-                    }
-                } catch (const TokenExpiredException&) {
-                    Logger::warn("Token expired during large file upload, propagating for refresh");
-                    throw;  // Let withTokenRefresh handle it
-                } catch (const RateLimitException& rle) {
-                    int waitSec = (std::min)(rle.retryAfterSeconds, 120);
-                    Logger::warn("Rate limited on upload, waiting {}s before retry ({}/3): {}",
-                                 waitSec, attempt + 1, uploadPath);
-                    for (int i = 0; i < waitSec && running_; ++i) {
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
-                    }
-                    if (!running_) break;
-                } catch (const QuotaExceededException&) {
-                    size_t remaining = largeFileUploads.size() - uploadIdx - 1;
-                    Logger::error("Storage quota exceeded — aborting {} remaining uploads", remaining);
+                } else {
                     database_->logActivity("upload", uploadPath, folder.id,
-                                           "Storage quota exceeded", static_cast<int64_t>(fileSize), "failed");
-                    quotaExceeded = true;
-                    quotaExceeded_ = true;
-                    quotaExceededAt_ = std::chrono::steady_clock::now();
-                    if (errorCallback_) {
-                        errorCallback_("Storage quota exceeded. Uploads paused for 10 minutes. "
-                                       "Please free up space on the server or increase your quota.");
-                    }
-                    break;
+                                           "Upload failed", static_cast<int64_t>(fileSize), "failed");
+                    Logger::error("Upload failed: {}", uploadPath);
                 }
-            }
 
-            if (!uploaded && !quotaExceeded) {
-                database_->logActivity("upload", uploadPath, folder.id,
-                                       "Upload failed", static_cast<int64_t>(fileSize), "failed");
-                Logger::error("Upload failed: {}", uploadPath);
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex_);
+                    stats_.processedFiles++;
+                    if (stats_.pendingUploads > 0) stats_.pendingUploads--;
+                    stats_.currentFileSize = 0;
+                    stats_.currentFileTransferred = 0;
+                    stats_.currentFilePercent = 0.0;
+                }
+                notifyStatusChange();
             }
+        };
 
-            {
-                std::lock_guard<std::mutex> lock(statsMutex_);
-                stats_.processedFiles++;
-                if (stats_.pendingUploads > 0) stats_.pendingUploads--;
-                stats_.currentFileSize = 0;
-                stats_.currentFileTransferred = 0;
-                stats_.currentFilePercent = 0.0;
+        if (!largeFileUploads.empty() && !quotaExceeded && running_) {
+            size_t largeWorkerCount = (std::min)(MAX_CONCURRENT_LARGE, largeFileUploads.size());
+            std::vector<std::thread> largeWorkers;
+            for (size_t w = 0; w < largeWorkerCount; ++w) {
+                largeWorkers.emplace_back(largeFileWorker);
             }
-            notifyStatusChange();
+            for (auto& t : largeWorkers) {
+                t.join();
+            }
         }
 
         if (quotaExceeded) {
@@ -1305,7 +1457,7 @@ void SyncEngine::processFileEvent(const FileEvent& event) {
     Logger::debug("Processing file event: " + event.path);
 
     // Find which folder this belongs to
-    auto folders = getSyncFolders();
+    auto folders = getSyncFoldersForSync();
     for (const auto& folder : folders) {
         if (event.path.find(folder.localPath) == 0) {
             // File belongs to this sync folder
@@ -1584,7 +1736,7 @@ void SyncEngine::triggerBidirectionalSync(const std::string& folderId) {
         return;
     }
 
-    auto folders = getSyncFolders();
+    auto folders = getSyncFoldersForSync();
 
     for (const auto& folder : folders) {
         if (folder.enabled && folder.status != SyncStatus::PAUSED) {
@@ -1789,6 +1941,18 @@ void SyncEngine::notifyStatusChange() {
     if (statusCallback_) {
         statusCallback_(getSyncState());
     }
+}
+
+void SyncEngine::notifyStatusChangeThrottled() {
+    auto now = std::chrono::steady_clock::now();
+    if (now - lastStatusNotify_ >= std::chrono::milliseconds(200)) {
+        lastStatusNotify_ = now;
+        notifyStatusChange();
+    }
+}
+
+std::vector<SyncFolder> SyncEngine::getSyncFoldersForSync() const {
+    return database_->getSyncFolders();
 }
 
 } // namespace baludesk
