@@ -510,11 +510,11 @@ std::optional<nlohmann::json> BaluhostClient::getPowerMonitoring() {
 }
 
 std::optional<nlohmann::json> BaluhostClient::getNetworkStats() {
-    return makeRequest("GET", "/api/system/network");
+    return makeRequest("GET", "/api/monitoring/network/current");
 }
 
 std::optional<nlohmann::json> BaluhostClient::getServicesStatus() {
-    return makeRequest("GET", "/api/system/services");
+    return makeRequest("GET", "/api/admin/services");
 }
 
 std::string BaluhostClient::getBaseUrl() const {

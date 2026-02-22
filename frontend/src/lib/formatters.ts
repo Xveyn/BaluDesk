@@ -82,6 +82,52 @@ export const formatTime = (dateString: string): string => {
 };
 
 /**
+ * Format bytes per second to human-readable speed (B/s, KB/s, MB/s)
+ */
+export const formatSpeed = (bytesPerSecond: number): string => {
+  if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
+  if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
+};
+
+/**
+ * Format timestamp to relative time string (e.g., "2m ago", "1h ago")
+ */
+export const formatRelativeTime = (timestamp: string): string => {
+  if (!timestamp) return 'Never';
+  const now = Date.now();
+
+  let msTimestamp: number;
+
+  // Check if purely numeric (Unix timestamp)
+  if (/^\d+$/.test(timestamp.trim())) {
+    const ts = parseInt(timestamp, 10);
+    if (isNaN(ts) || ts === 0) return 'Never';
+    msTimestamp = ts < 10000000000 ? ts * 1000 : ts;
+  } else {
+    // ISO date string (e.g. "2026-02-22 14:35:21" from SQLite)
+    const parsed = new Date(timestamp).getTime();
+    if (isNaN(parsed)) return 'Never';
+    msTimestamp = parsed;
+  }
+
+  const diff = now - msTimestamp;
+  if (diff < 0) return 'just now';
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+};
+
+/**
+ * Extract file/folder name from a path
+ */
+export const getFileName = (path: string): string => {
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  return parts[parts.length - 1] || path;
+};
+
+/**
  * Format Unix timestamp (seconds or milliseconds) to localized date/time
  */
 export const formatTimestamp = (timestamp: string | number): string => {

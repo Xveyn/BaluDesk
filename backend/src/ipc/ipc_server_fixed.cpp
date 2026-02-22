@@ -1227,10 +1227,10 @@ void IpcServer::handleGetNetworkStats(int requestId) {
                     {"type", "network_stats"},
                     {"success", true},
                     {"data", {
-                        {"uploadSpeed", safe_value(data, "upload_speed", 0.0)},
-                        {"downloadSpeed", safe_value(data, "download_speed", 0.0)},
-                        {"totalUpToday", safe_value<uint64_t>(data, "total_up_today", 0)},
-                        {"totalDownToday", safe_value<uint64_t>(data, "total_down_today", 0)}
+                        {"uploadSpeed", safe_value(data, "upload_mbps", 0.0) * 1024.0 * 1024.0 / 8.0},
+                        {"downloadSpeed", safe_value(data, "download_mbps", 0.0) * 1024.0 * 1024.0 / 8.0},
+                        {"totalUpToday", 0},
+                        {"totalDownToday", 0}
                     }}
                 };
                 sendResponse(result, requestId);
@@ -1279,11 +1279,20 @@ void IpcServer::handleGetServicesStatus(int requestId) {
 
                 auto& data = *response;
                 json serviceArray = json::array();
-                if (data.contains("services") && data["services"].is_array()) {
+                if (data.is_array()) {
+                    // BaluHost /api/admin/services returns a direct array
+                    for (const auto& svc : data) {
+                        serviceArray.push_back({
+                            {"name", safe_value(svc, "display_name", safe_value(svc, "name", std::string("unknown")))},
+                            {"status", safe_value(svc, "state", std::string("unknown"))}
+                        });
+                    }
+                } else if (data.contains("services") && data["services"].is_array()) {
+                    // Fallback for wrapped format
                     for (const auto& svc : data["services"]) {
                         serviceArray.push_back({
-                            {"name", safe_value(svc, "name", std::string("unknown"))},
-                            {"status", safe_value(svc, "status", std::string("unknown"))}
+                            {"name", safe_value(svc, "display_name", safe_value(svc, "name", std::string("unknown")))},
+                            {"status", safe_value(svc, "state", std::string("unknown"))}
                         });
                     }
                 }
