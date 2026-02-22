@@ -16,6 +16,7 @@ struct FileMetadata {
     std::string checksum;
     bool isDirectory;
     std::string syncStatus; // synced, pending_upload, pending_download
+    std::string localMtime; // Filesystem last_write_time as epoch milliseconds string
 };
 
 struct Conflict {
@@ -93,6 +94,7 @@ public:
     // File metadata
     bool upsertFileMetadata(const FileMetadata& metadata);
     bool upsertFileMetadata(const std::string& path, const std::string& folderId, uint64_t size, const std::string& checksum, const std::string& modifiedAt);
+    bool upsertFileMetadata(const std::string& path, const std::string& folderId, uint64_t size, const std::string& checksum, const std::string& modifiedAt, const std::string& localMtime);
     std::optional<FileMetadata> getFileMetadata(const std::string& path);
     std::optional<FileMetadata> getFileMetadata(const std::string& path, const std::string& folderId);  // A4: folder-scoped lookup
     std::vector<FileMetadata> getFilesInFolder(const std::string& folderId);

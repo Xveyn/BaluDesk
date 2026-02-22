@@ -148,7 +148,21 @@ std::vector<DetectedChange> ChangeDetector::detectLocalChanges(
                 change.isRemote = false;
                 changes.push_back(change);
             } else {
-                // File in DB -> hash needed to detect MODIFIED
+                // Quick check: mtime + size unchanged → skip expensive hash
+                auto diskMtime = fs::last_write_time(entry.path());
+                auto diskMtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    diskMtime.time_since_epoch()).count();
+                std::string diskMtimeStr = std::to_string(diskMtimeMs);
+
+                if (!knownIt->second.localMtime.empty() &&
+                    knownIt->second.localMtime == diskMtimeStr &&
+                    knownIt->second.size == fileSize) {
+                    // mtime + size match → file unchanged, skip hash
+                    ++it;
+                    continue;
+                }
+
+                // mtime or size changed → hash needed to detect MODIFIED
                 std::string hash = calculateFileHash(fullPath);
                 if (knownIt->second.checksum != hash) {
                     DetectedChange change;

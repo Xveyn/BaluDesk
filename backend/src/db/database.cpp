@@ -224,6 +224,9 @@ bool Database::runMigrations() {
     executeQuery("ALTER TABLE sync_folders ADD COLUMN sync_direction TEXT NOT NULL DEFAULT 'bidirectional';");
     executeQuery("ALTER TABLE sync_folders ADD COLUMN conflict_resolution TEXT NOT NULL DEFAULT 'ask';");
 
+    // Add local_mtime column to file_metadata for mtime-based change detection
+    executeQuery("ALTER TABLE file_metadata ADD COLUMN local_mtime TEXT DEFAULT '';");
+
     Logger::info("Database migrations completed");
     return true;
 }
@@ -440,19 +443,20 @@ std::vector<SyncFolder> Database::getSyncFolders() {
 bool Database::upsertFileMetadata(const FileMetadata& metadata) {
     // A4: Use composite key (path, folder_id) for ON CONFLICT
     const char* sql = R"(
-        INSERT INTO file_metadata (path, folder_id, size, modified_at, checksum, is_directory, sync_status, last_synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        INSERT INTO file_metadata (path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime, last_synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(path, folder_id) DO UPDATE SET
             size = excluded.size,
             modified_at = excluded.modified_at,
             checksum = excluded.checksum,
             sync_status = excluded.sync_status,
+            local_mtime = excluded.local_mtime,
             last_synced_at = datetime('now');
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return false;
-    
+
     sqlite3_bind_text(stmt, 1, metadata.path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, metadata.folderId.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, metadata.size);
@@ -460,47 +464,51 @@ bool Database::upsertFileMetadata(const FileMetadata& metadata) {
     sqlite3_bind_text(stmt, 5, metadata.checksum.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 6, metadata.isDirectory ? 1 : 0);
     sqlite3_bind_text(stmt, 7, metadata.syncStatus.c_str(), -1, SQLITE_TRANSIENT);
-    
+    sqlite3_bind_text(stmt, 8, metadata.localMtime.c_str(), -1, SQLITE_TRANSIENT);
+
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
-    
+
     if (rc != SQLITE_DONE) {
         Logger::error("Failed to upsert file metadata: {}", sqlite3_errmsg(db_));
         return false;
     }
-    
+
     return true;
 }
 
 std::optional<FileMetadata> Database::getFileMetadata(const std::string& path) {
     const char* sql = R"(
-        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status
+        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
         FROM file_metadata WHERE path = ?;
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return std::nullopt;
-    
+
     sqlite3_bind_text(stmt, 1, path.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     FileMetadata metadata;
-    
+
     if (sqlite3_step(stmt) == SQLITE_ROW) {
         metadata.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         metadata.folderId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         metadata.size = sqlite3_column_int64(stmt, 2);
         metadata.modifiedAt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        
+
         const char* checksum = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
         if (checksum) metadata.checksum = checksum;
-        
+
         metadata.isDirectory = sqlite3_column_int(stmt, 5) != 0;
         metadata.syncStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        
+
+        const char* localMtime = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (localMtime) metadata.localMtime = localMtime;
+
         sqlite3_finalize(stmt);
         return metadata;
     }
-    
+
     sqlite3_finalize(stmt);
     return std::nullopt;
 }
@@ -508,7 +516,7 @@ std::optional<FileMetadata> Database::getFileMetadata(const std::string& path) {
 std::optional<FileMetadata> Database::getFileMetadata(const std::string& path, const std::string& folderId) {
     // A4: Folder-scoped lookup using composite primary key
     const char* sql = R"(
-        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status
+        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
         FROM file_metadata WHERE path = ? AND folder_id = ?;
     )";
 
@@ -532,6 +540,9 @@ std::optional<FileMetadata> Database::getFileMetadata(const std::string& path, c
         metadata.isDirectory = sqlite3_column_int(stmt, 5) != 0;
         metadata.syncStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
 
+        const char* localMtime = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (localMtime) metadata.localMtime = localMtime;
+
         sqlite3_finalize(stmt);
         return metadata;
     }
@@ -551,76 +562,98 @@ bool Database::upsertFileMetadata(const std::string& path, const std::string& fo
     metadata.modifiedAt = modifiedAt;
     metadata.isDirectory = false;
     metadata.syncStatus = "synced";
-    
+
+    return upsertFileMetadata(metadata);
+}
+
+bool Database::upsertFileMetadata(const std::string& path, const std::string& folderId,
+                                  uint64_t size, const std::string& checksum,
+                                  const std::string& modifiedAt, const std::string& localMtime) {
+    FileMetadata metadata;
+    metadata.path = path;
+    metadata.folderId = folderId;
+    metadata.size = size;
+    metadata.checksum = checksum;
+    metadata.modifiedAt = modifiedAt;
+    metadata.isDirectory = false;
+    metadata.syncStatus = "synced";
+    metadata.localMtime = localMtime;
+
     return upsertFileMetadata(metadata);
 }
 
 std::vector<FileMetadata> Database::getFilesInFolder(const std::string& folderId) {
     const char* sql = R"(
-        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status
-        FROM file_metadata 
+        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
+        FROM file_metadata
         WHERE folder_id = ?
         ORDER BY path;
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return {};
-    
+
     sqlite3_bind_text(stmt, 1, folderId.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     std::vector<FileMetadata> files;
-    
+
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         FileMetadata metadata;
         metadata.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         metadata.folderId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         metadata.size = sqlite3_column_int64(stmt, 2);
         metadata.modifiedAt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        
+
         const char* checksum = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
         if (checksum) metadata.checksum = checksum;
-        
+
         metadata.isDirectory = sqlite3_column_int(stmt, 5) != 0;
         metadata.syncStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        
+
+        const char* localMtime = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (localMtime) metadata.localMtime = localMtime;
+
         files.push_back(metadata);
     }
-    
+
     sqlite3_finalize(stmt);
     return files;
 }
 
 std::vector<FileMetadata> Database::getChangedFilesSince(const std::string& timestamp) {
     const char* sql = R"(
-        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status
-        FROM file_metadata 
-        WHERE modified_at > ? 
+        SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
+        FROM file_metadata
+        WHERE modified_at > ?
         ORDER BY modified_at DESC;
     )";
-    
+
     sqlite3_stmt* stmt = prepareStatement(sql);
     if (!stmt) return {};
-    
+
     sqlite3_bind_text(stmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
-    
+
     std::vector<FileMetadata> files;
-    
+
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         FileMetadata metadata;
         metadata.path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         metadata.folderId = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         metadata.size = sqlite3_column_int64(stmt, 2);
         metadata.modifiedAt = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        
+
         const char* checksum = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
         if (checksum) metadata.checksum = checksum;
-        
+
         metadata.isDirectory = sqlite3_column_int(stmt, 5) != 0;
         metadata.syncStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        
+
+        const char* localMtime = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        if (localMtime) metadata.localMtime = localMtime;
+
         files.push_back(metadata);
     }
-    
+
     sqlite3_finalize(stmt);
     return files;
 }
