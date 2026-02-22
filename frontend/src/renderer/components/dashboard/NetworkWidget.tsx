@@ -1,12 +1,6 @@
 import { Wifi, ArrowUp, ArrowDown } from 'lucide-react';
 import { useNetworkStats } from '../../hooks/useNetworkStats';
-import { formatBytes } from '../../../lib/formatters';
-
-const formatSpeed = (bytesPerSecond: number): string => {
-  if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
-  if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
-  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
-};
+import { formatBytes, formatSpeed } from '../../../lib/formatters';
 
 export function NetworkWidget() {
   const { stats, loading, error } = useNetworkStats();

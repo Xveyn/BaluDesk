@@ -1,32 +1,11 @@
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
-import { formatBytes } from '../../../lib/formatters';
-
-interface SyncStats {
-  status: string;
-  uploadSpeed: number;
-  downloadSpeed: number;
-  pendingUploads: number;
-  pendingDownloads: number;
-  lastSync: string;
-  syncFolderCount?: number;
-  currentFile?: string;
-  totalFiles?: number;
-  processedFiles?: number;
-  currentFileSize?: number;
-  currentFileTransferred?: number;
-  currentFilePercent?: number;
-}
+import { formatBytes, formatSpeed } from '../../../lib/formatters';
+import { SyncStats } from '../../hooks/useSyncStatus';
 
 interface SyncActivityCardProps {
   syncStats: SyncStats | null;
   syncError: string | null;
 }
-
-const formatSpeed = (bytesPerSecond: number): string => {
-  if (bytesPerSecond < 1024) return `${bytesPerSecond.toFixed(0)} B/s`;
-  if (bytesPerSecond < 1024 * 1024) return `${(bytesPerSecond / 1024).toFixed(1)} KB/s`;
-  return `${(bytesPerSecond / (1024 * 1024)).toFixed(1)} MB/s`;
-};
 
 export function SyncActivityCard({ syncStats, syncError }: SyncActivityCardProps) {
   return (

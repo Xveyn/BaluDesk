@@ -1,5 +1,6 @@
 import { FileText, Upload, Download, AlertTriangle, Trash2, Clock } from 'lucide-react';
 import { useRecentActivity } from '../../hooks/useRecentActivity';
+import { formatRelativeTime, getFileName } from '../../../lib/formatters';
 
 function getActivityIcon(type: string) {
   switch (type) {
@@ -20,24 +21,6 @@ function getActivityLabel(type: string): string {
     case 'modify': return 'modified';
     default: return type;
   }
-}
-
-function formatRelativeTime(timestamp: string): string {
-  if (!timestamp) return '';
-  const now = Date.now();
-  const ts = typeof timestamp === 'string' ? parseInt(timestamp, 10) : timestamp;
-  if (isNaN(ts) || ts === 0) return '';
-  const msTimestamp = ts < 10000000000 ? ts * 1000 : ts;
-  const diff = now - msTimestamp;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
-}
-
-function getFileName(path: string): string {
-  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
-  return parts[parts.length - 1] || path;
 }
 
 export function RecentActivityCard() {

@@ -31,7 +31,7 @@ export function useNasServices() {
 
   useEffect(() => {
     fetchServices();
-    const interval = setInterval(fetchServices, 15000);
+    const interval = setInterval(fetchServices, 30000);
     return () => clearInterval(interval);
   }, [fetchServices]);
 

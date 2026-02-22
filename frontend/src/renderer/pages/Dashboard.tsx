@@ -1,22 +1,38 @@
 import { Activity } from 'lucide-react';
-import { formatTimestamp } from '../../lib/formatters';
 import { useSyncStatus } from '../hooks/useSyncStatus';
-import { QuickStatsGrid } from '../components/dashboard/QuickStatsGrid';
-import { SyncActivityCard } from '../components/dashboard/SyncActivityCard';
+import { SyncOverviewCard } from '../components/dashboard/SyncOverviewCard';
 import { SyncFoldersCard } from '../components/dashboard/SyncFoldersCard';
-import { NetworkWidget } from '../components/dashboard/NetworkWidget';
-import { ServicesPanel } from '../components/dashboard/ServicesPanel';
-import { RaidStatusCard } from '../components/dashboard/RaidStatusCard';
+import { ActiveTransfersCard } from '../components/dashboard/ActiveTransfersCard';
 import { RecentActivityCard } from '../components/dashboard/RecentActivityCard';
-import { PowerCard } from '../components/PowerCard';
+import { NasDetailsPanel } from '../components/dashboard/NasDetailsPanel';
 
 interface DashboardProps {
   user: { username: string; serverUrl?: string };
   onLogout: () => void;
 }
 
+function getStatusSubtitle(status: string | undefined, pendingUploads: number, pendingDownloads: number): string {
+  const total = pendingUploads + pendingDownloads;
+  switch (status) {
+    case 'syncing':
+      return total > 0 ? `${total} files syncing...` : 'Syncing...';
+    case 'paused':
+      return 'Sync paused';
+    case 'error':
+      return 'Sync error occurred';
+    default:
+      return 'All files are synced';
+  }
+}
+
 export default function Dashboard({ user: _user, onLogout: _onLogout }: DashboardProps) {
   const { syncStats, systemInfo, raidStatus, loading, syncError } = useSyncStatus();
+
+  const subtitle = getStatusSubtitle(
+    syncStats?.status,
+    syncStats?.pendingUploads || 0,
+    syncStats?.pendingDownloads || 0
+  );
 
   return (
     <div className="space-y-6">
@@ -28,32 +44,23 @@ export default function Dashboard({ user: _user, onLogout: _onLogout }: Dashboar
           </div>
           <span>Dashboard</span>
         </h1>
-        <p className="mt-2 text-slate-400">
-          Monitor your NAS and sync status • Last sync: {syncStats?.lastSync ? formatTimestamp(syncStats.lastSync) : 'Never'}
-        </p>
+        <p className="mt-2 text-slate-400">{subtitle}</p>
       </div>
 
-      {/* Quick Stats: CPU, RAM, Disk, Uptime */}
-      <QuickStatsGrid systemInfo={systemInfo} loading={loading} />
+      {/* Row 1: Sync Overview (full width) */}
+      <SyncOverviewCard syncStats={syncStats} syncError={syncError} loading={loading} />
 
-      {/* Sync Overview: Activity + Folders */}
+      {/* Row 2: Sync Folders (full width) */}
+      <SyncFoldersCard />
+
+      {/* Row 3: Active Transfers + Recent Activity (2 columns) */}
       <div className="grid gap-6 md:grid-cols-2">
-        <SyncActivityCard syncStats={syncStats} syncError={syncError} />
-        <SyncFoldersCard />
-      </div>
-
-      {/* Monitoring: Network, Services, Power */}
-      <div className="grid gap-6 md:grid-cols-3">
-        <NetworkWidget />
-        <ServicesPanel />
-        <PowerCard />
-      </div>
-
-      {/* RAID + Activity Feed */}
-      <div className="grid gap-6 md:grid-cols-2">
-        <RaidStatusCard raidStatus={raidStatus} />
+        <ActiveTransfersCard syncStats={syncStats} />
         <RecentActivityCard />
       </div>
+
+      {/* Row 4: NAS Details (collapsible, closed by default) */}
+      <NasDetailsPanel systemInfo={systemInfo} raidStatus={raidStatus} loading={loading} />
     </div>
   );
 }

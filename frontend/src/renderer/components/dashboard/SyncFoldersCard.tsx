@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { FolderSync, RefreshCw } from 'lucide-react';
+import { FolderSync, RefreshCw, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { formatRelativeTime, getFileName } from '../../../lib/formatters';
 
 interface SyncFolder {
   id: string;
@@ -25,22 +26,15 @@ function getStatusBadge(status: string) {
   }
 }
 
-function getFolderName(path: string): string {
-  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
-  return parts[parts.length - 1] || path;
-}
-
-function formatRelativeTime(timestamp: string): string {
-  if (!timestamp) return 'Never';
-  const now = Date.now();
-  const ts = typeof timestamp === 'string' ? parseInt(timestamp, 10) : timestamp;
-  if (isNaN(ts) || ts === 0) return 'Never';
-  const msTimestamp = ts < 10000000000 ? ts * 1000 : ts;
-  const diff = now - msTimestamp;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
+function getDirectionInfo(direction: string) {
+  switch (direction) {
+    case 'upload':
+      return { icon: ArrowUp, label: 'Upload', className: 'text-emerald-400' };
+    case 'download':
+      return { icon: ArrowDown, label: 'Download', className: 'text-purple-400' };
+    default:
+      return { icon: ArrowUpDown, label: 'Bidirectional', className: 'text-blue-400' };
+  }
 }
 
 export function SyncFoldersCard() {
@@ -62,7 +56,7 @@ export function SyncFoldersCard() {
 
   useEffect(() => {
     fetchFolders();
-    const interval = setInterval(fetchFolders, 10000);
+    const interval = setInterval(fetchFolders, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -75,7 +69,7 @@ export function SyncFoldersCard() {
   };
 
   return (
-    <div className="group relative overflow-hidden rounded-xl border border-white/10 bg-gradient-to-br from-orange-500/10 to-orange-600/10 p-4 backdrop-blur-sm transition-all hover:border-orange-500/30 hover:shadow-lg hover:shadow-orange-500/20">
+    <div className="rounded-xl border border-white/10 bg-gradient-to-br from-orange-500/10 to-orange-600/10 p-4 backdrop-blur-sm transition-all hover:border-orange-500/30">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center space-x-2">
           <div className="rounded-lg bg-orange-500/20 p-1.5">
@@ -105,6 +99,8 @@ export function SyncFoldersCard() {
         <div className="space-y-2">
           {folders.map((folder) => {
             const badge = getStatusBadge(folder.status);
+            const direction = getDirectionInfo(folder.sync_direction);
+            const DirIcon = direction.icon;
             return (
               <div
                 key={folder.id}
@@ -113,12 +109,15 @@ export function SyncFoldersCard() {
                 <div className="flex items-center space-x-2 min-w-0 flex-1">
                   <FolderSync className="h-3.5 w-3.5 text-orange-400 flex-shrink-0" />
                   <span className="text-xs text-white truncate" title={folder.local_path}>
-                    {getFolderName(folder.local_path)}
+                    {getFileName(folder.local_path)}
                   </span>
                 </div>
                 <div className="flex items-center space-x-2 flex-shrink-0 ml-2">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${badge.className}`}>
                     {badge.label}
+                  </span>
+                  <span title={direction.label}>
+                    <DirIcon className={`h-3 w-3 ${direction.className}`} />
                   </span>
                   <span className="text-[10px] text-slate-500 w-14 text-right">
                     {formatRelativeTime(folder.last_sync)}

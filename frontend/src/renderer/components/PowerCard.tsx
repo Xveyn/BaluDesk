@@ -17,10 +17,10 @@ export const PowerCard: React.FC = () => {
   useEffect(() => {
     fetchPowerData();
 
-    // Poll every 5 seconds
+    // Poll every 10 seconds
     const interval = setInterval(() => {
       fetchPowerData();
-    }, 5000);
+    }, 10000);
 
     return () => clearInterval(interval);
   }, []);
