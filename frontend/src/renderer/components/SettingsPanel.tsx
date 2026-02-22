@@ -663,6 +663,14 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </div>
               </div>
             </SettingsGroup>
+
+            {/* Dev Mode */}
+            <DevModeGroup
+              expanded={expandedGroup === 'adv-devmode'}
+              onToggle={() =>
+                setExpandedGroup(expandedGroup === 'adv-devmode' ? null : 'adv-devmode')
+              }
+            />
           </div>
         )}
       </div>
@@ -856,5 +864,88 @@ function SelectSetting({
         ))}
       </select>
     </div>
+  );
+}
+
+interface DevModeGroupProps {
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+function DevModeGroup({ expanded, onToggle }: DevModeGroupProps) {
+  const [devMode, setDevMode] = useState<'prod' | 'mock'>('prod');
+
+  useEffect(() => {
+    const fetchDevMode = async () => {
+      try {
+        const response = await window.electronAPI.sendBackendCommand({ type: 'get_dev_mode' });
+        if (response?.success && response.data?.devMode) {
+          setDevMode(response.data.devMode);
+        }
+      } catch (err) {
+        console.error('Failed to fetch dev mode:', err);
+      }
+    };
+    fetchDevMode();
+  }, []);
+
+  const handleToggle = async (newMode: 'prod' | 'mock') => {
+    try {
+      const response = await window.electronAPI.sendBackendCommand({
+        type: 'set_dev_mode',
+        data: { devMode: newMode }
+      });
+      if (response?.success) {
+        setDevMode(newMode);
+        toast.success(`Data source switched to ${newMode === 'prod' ? 'Server' : 'Mock'}`);
+      }
+    } catch (err) {
+      console.error('Failed to toggle dev mode:', err);
+      toast.error('Failed to switch data source');
+    }
+  };
+
+  return (
+    <SettingsGroup
+      title="Data Source (Dev Mode)"
+      icon={<Server className="h-5 w-5" />}
+      expanded={expanded}
+      onToggle={onToggle}
+    >
+      <div className="space-y-4">
+        <p className="text-xs text-gray-600 dark:text-gray-400">
+          Switch between live server data and mock test data for development.
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleToggle('prod')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              devMode === 'prod'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30'
+                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+            }`}
+          >
+            Server (Production)
+          </button>
+          <button
+            onClick={() => handleToggle('mock')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              devMode === 'mock'
+                ? 'bg-amber-600 text-white shadow-lg shadow-amber-500/30'
+                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+            }`}
+          >
+            Mock (Test Data)
+          </button>
+        </div>
+        {devMode === 'mock' && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-50 dark:bg-amber-900/20 p-3">
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              Mock mode active. Dashboard shows test data (8 cores, 45% CPU, 16GB RAM, 1TB disk).
+            </p>
+          </div>
+        )}
+      </div>
+    </SettingsGroup>
   );
 }
