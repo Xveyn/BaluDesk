@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BaluPi — Architektur & Konzept</title>
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: #1e293b;
+            --bg-card-hover: #273548;
+            --accent: #38bdf8;
+            --accent-green: #34d399;
+            --accent-amber: #fbbf24;
+            --accent-rose: #fb7185;
+            --accent-violet: #a78bfa;
+            --accent-orange: #fb923c;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #334155;
+            --radius: 12px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+
+        /* ── Hero ── */
+        .hero {
+            text-align: center;
+            padding: 80px 24px 60px;
+            background: linear-gradient(135deg, #0f172a 0%, #1a1a3e 50%, #0f172a 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 50% 0%, rgba(56,189,248,.12) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        .hero h1 {
+            font-size: 3.2rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-violet));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 12px;
+        }
+        .hero .subtitle {
+            font-size: 1.15rem;
+            color: var(--text-secondary);
+            max-width: 680px;
+            margin: 0 auto 32px;
+        }
+        .hero .badges {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 999px;
+            font-size: .82rem;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,.04);
+        }
+        .badge.blue   { border-color: rgba(56,189,248,.3);  color: var(--accent); }
+        .badge.green  { border-color: rgba(52,211,153,.3);  color: var(--accent-green); }
+        .badge.amber  { border-color: rgba(251,191,36,.3);  color: var(--accent-amber); }
+        .badge.violet { border-color: rgba(167,139,250,.3); color: var(--accent-violet); }
+
+        /* ── Container ── */
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* ── Section ── */
+        section {
+            padding: 64px 0;
+        }
+        section + section {
+            border-top: 1px solid var(--border);
+        }
+        .section-label {
+            font-size: .75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--accent);
+            margin-bottom: 8px;
+        }
+        .section-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        .section-desc {
+            color: var(--text-secondary);
+            max-width: 720px;
+            margin-bottom: 40px;
+            font-size: 1.02rem;
+        }
+
+        /* ── Cards ── */
+        .card-grid {
+            display: grid;
+            gap: 20px;
+        }
+        .card-grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+        .card-grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            transition: background .2s, border-color .2s;
+        }
+        .card:hover {
+            background: var(--bg-card-hover);
+            border-color: rgba(56,189,248,.2);
+        }
+        .card .icon {
+            font-size: 1.8rem;
+            margin-bottom: 14px;
+            display: block;
+        }
+        .card h3 {
+            font-size: 1.12rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .card p, .card li {
+            color: var(--text-secondary);
+            font-size: .92rem;
+        }
+        .card ul {
+            list-style: none;
+            margin-top: 10px;
+        }
+        .card ul li::before {
+            content: '→ ';
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        /* ── Architecture Diagram ── */
+        .arch-diagram {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 40px 28px;
+            overflow-x: auto;
+        }
+        .arch-svg {
+            display: block;
+            margin: 0 auto;
+            max-width: 100%;
+        }
+
+        /* ── Flow Diagram ── */
+        .flow-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            align-items: center;
+            margin: 32px 0;
+        }
+        .flow-step {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px 28px;
+            width: 100%;
+            max-width: 600px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .flow-step .num {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--accent);
+            color: var(--bg-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: .9rem;
+            flex-shrink: 0;
+        }
+        .flow-arrow {
+            width: 2px;
+            height: 28px;
+            background: var(--border);
+            position: relative;
+        }
+        .flow-arrow::after {
+            content: '▼';
+            position: absolute;
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--text-muted);
+            font-size: .6rem;
+        }
+
+        /* ── Table ── */
+        .styled-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            font-size: .92rem;
+        }
+        .styled-table thead {
+            background: rgba(56,189,248,.08);
+        }
+        .styled-table th {
+            text-align: left;
+            padding: 14px 18px;
+            font-weight: 700;
+            font-size: .82rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent);
+            border-bottom: 1px solid var(--border);
+        }
+        .styled-table td {
+            padding: 12px 18px;
+            border-bottom: 1px solid rgba(51,65,85,.5);
+            color: var(--text-secondary);
+        }
+        .styled-table tbody tr:last-child td { border-bottom: none; }
+        .styled-table tbody tr:hover { background: rgba(255,255,255,.02); }
+
+        .tag {
+            display: inline-block;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: .78rem;
+            font-weight: 600;
+        }
+        .tag.yes   { background: rgba(52,211,153,.15); color: var(--accent-green); }
+        .tag.no    { background: rgba(251,113,133,.12); color: var(--accent-rose); }
+        .tag.part  { background: rgba(251,191,36,.12);  color: var(--accent-amber); }
+        .tag.pi    { background: rgba(167,139,250,.12); color: var(--accent-violet); }
+
+        /* ── Tier Visual ── */
+        .tier-visual {
+            display: flex;
+            gap: 0;
+            align-items: stretch;
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            margin: 28px 0;
+        }
+        .tier-block {
+            flex: 1;
+            padding: 32px 24px;
+            text-align: center;
+            position: relative;
+        }
+        .tier-block h4 {
+            font-size: 1rem;
+            margin-bottom: 4px;
+        }
+        .tier-block .pct {
+            font-size: 2.4rem;
+            font-weight: 800;
+            line-height: 1;
+            margin: 12px 0;
+        }
+        .tier-block .desc {
+            font-size: .82rem;
+            color: var(--text-secondary);
+        }
+        .tier-hot {
+            background: linear-gradient(180deg, rgba(56,189,248,.12), rgba(56,189,248,.03));
+            border-right: 1px solid var(--border);
+        }
+        .tier-hot .pct { color: var(--accent); }
+        .tier-warm {
+            background: linear-gradient(180deg, rgba(251,191,36,.08), rgba(251,191,36,.02));
+            border-right: 1px solid var(--border);
+        }
+        .tier-warm .pct { color: var(--accent-amber); }
+        .tier-cold {
+            background: linear-gradient(180deg, rgba(100,116,139,.08), rgba(100,116,139,.02));
+        }
+        .tier-cold .pct { color: var(--text-muted); }
+
+        /* ── Connector Arrow (between tiers) ── */
+        .tier-block::after {
+            content: '›';
+            position: absolute;
+            right: -8px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 1.4rem;
+            color: var(--text-muted);
+            z-index: 1;
+        }
+        .tier-block:last-child::after { content: ''; }
+
+        /* ── Timeline / Phases ── */
+        .phase-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .phase-item {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 22px 24px;
+        }
+        .phase-item:hover { border-color: rgba(56,189,248,.2); }
+        .phase-num {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1rem;
+            flex-shrink: 0;
+        }
+        .phase-num.p0 { background: rgba(52,211,153,.15); color: var(--accent-green); }
+        .phase-num.p1 { background: rgba(56,189,248,.15); color: var(--accent); }
+        .phase-num.p2 { background: rgba(167,139,250,.15); color: var(--accent-violet); }
+        .phase-num.p3 { background: rgba(251,191,36,.15); color: var(--accent-amber); }
+        .phase-num.p4 { background: rgba(251,146,60,.15); color: var(--accent-orange); }
+        .phase-num.p5 { background: rgba(251,113,133,.15); color: var(--accent-rose); }
+        .phase-body h4 { font-size: 1rem; margin-bottom: 4px; }
+        .phase-body p { font-size: .88rem; color: var(--text-secondary); }
+        .phase-meta {
+            display: flex;
+            gap: 16px;
+            margin-top: 8px;
+            font-size: .8rem;
+        }
+        .phase-meta span {
+            color: var(--text-muted);
+        }
+        .phase-meta strong {
+            color: var(--text-secondary);
+        }
+
+        /* ── Callout ── */
+        .callout {
+            background: rgba(56,189,248,.06);
+            border: 1px solid rgba(56,189,248,.18);
+            border-radius: var(--radius);
+            padding: 20px 24px;
+            margin: 24px 0;
+            font-size: .94rem;
+            color: var(--text-secondary);
+        }
+        .callout.warn {
+            background: rgba(251,191,36,.06);
+            border-color: rgba(251,191,36,.18);
+        }
+        .callout.success {
+            background: rgba(52,211,153,.06);
+            border-color: rgba(52,211,153,.18);
+        }
+        .callout strong {
+            color: var(--text-primary);
+        }
+
+        /* ── SVG Diagram ── */
+        .svg-wrap {
+            margin: 32px 0;
+            text-align: center;
+        }
+        .svg-wrap svg {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* ── Comparison ── */
+        .compare-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 24px 0;
+        }
+        @media (max-width: 700px) {
+            .compare-grid { grid-template-columns: 1fr; }
+        }
+        .compare-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 24px;
+        }
+        .compare-card h4 {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .compare-card ul {
+            list-style: none;
+        }
+        .compare-card ul li {
+            padding: 4px 0;
+            font-size: .9rem;
+            color: var(--text-secondary);
+        }
+        .compare-card ul li::before {
+            content: '• ';
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        /* ── Footer ── */
+        footer {
+            text-align: center;
+            padding: 48px 24px;
+            border-top: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: .85rem;
+        }
+        footer a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 600px) {
+            .hero h1 { font-size: 2.2rem; }
+            .tier-visual { flex-direction: column; }
+            .tier-block::after { content: ''; }
+            section { padding: 40px 0; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════ HERO ════════════════════════════════════════════ -->
+<header class="hero">
+    <h1>🥧 BaluPi</h1>
+    <p class="subtitle">
+        Low-Power Raspberry Pi Cache-Tier für das BaluHost-Ökosystem — immer erreichbar, energieeffizient, optimiert für den 80/20-Zugriff.
+    </p>
+    <div class="badges">
+        <span class="badge blue">Raspberry Pi 3B+</span>
+        <span class="badge green">24/7 &bull; ~4W</span>
+        <span class="badge amber">Hot-Tier Cache</span>
+        <span class="badge violet">FastAPI (Minimal)</span>
+    </div>
+</header>
+
+<main class="container">
+
+<!-- ════════════════════════════════════════ MOTIVATION ════════════════════════════════════════ -->
+<section>
+    <div class="section-label">Motivation</div>
+    <h2 class="section-title">Warum BaluPi?</h2>
+    <p class="section-desc">
+        Das NAS (BaluHost) verbraucht ~65W im Idle. Für die alltäglichen 20% der Dateien — Fotos, Dokumente, aktive Projekte — braucht es keinen Ryzen-Server. Ein Raspberry Pi mit SSD reicht als Always-On-Cache-Tier.
+    </p>
+
+    <div class="tier-visual">
+        <div class="tier-block tier-hot">
+            <h4>🔥 Hot Tier</h4>
+            <div class="pct">20%</div>
+            <div class="desc">Frequently accessed files<br><strong>BaluPi (SSD, 24/7)</strong></div>
+        </div>
+        <div class="tier-block tier-warm">
+            <h4>🌡️ Warm Tier</h4>
+            <div class="pct">30%</div>
+            <div class="desc">Gelegentlich genutzt<br><strong>NAS on-demand</strong></div>
+        </div>
+        <div class="tier-block tier-cold">
+            <h4>❄️ Cold Tier</h4>
+            <div class="pct">50%</div>
+            <div class="desc">Archiv, Backups, Medien<br><strong>Nur auf dem NAS</strong></div>
+        </div>
+    </div>
+
+    <div class="card-grid cols-3">
+        <div class="card">
+            <span class="icon">⚡</span>
+            <h3>Energieeinsparung</h3>
+            <p>Pi: ~4W vs NAS: ~65W. Bei 20h/Tag NAS-Off spart das ~400 kWh/Jahr (~120€).</p>
+        </div>
+        <div class="card">
+            <span class="icon">📱</span>
+            <h3>Mobile-First Sync</h3>
+            <p>BaluApp synct Fotos & Dokumente bevorzugt auf den Pi — der ist immer da, auch per VPN.</p>
+        </div>
+        <div class="card">
+            <span class="icon">🔄</span>
+            <h3>Seamless Handover</h3>
+            <p>Wenn das NAS hochfährt, synchronisiert BaluPi automatisch alle Pending-Änderungen.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ ARCHITEKTUR ════════════════════════════════════════ -->
+<section>
+    <div class="section-label">Architektur</div>
+    <h2 class="section-title">Gesamtsystem-Übersicht</h2>
+    <p class="section-desc">
+        BaluPi integriert sich als Cache-Tier zwischen Clients und NAS. Clients fragen zuerst den Pi, der Pi leitet bei Bedarf an das NAS weiter.
+    </p>
+
+    <div class="svg-wrap">
+        <svg viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" style="max-width:860px;">
+            <defs>
+                <linearGradient id="gPi" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#38bdf8" stop-opacity=".18"/>
+                    <stop offset="100%" stop-color="#38bdf8" stop-opacity=".04"/>
+                </linearGradient>
+                <linearGradient id="gNas" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#a78bfa" stop-opacity=".18"/>
+                    <stop offset="100%" stop-color="#a78bfa" stop-opacity=".04"/>
+                </linearGradient>
+                <linearGradient id="gClient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#34d399" stop-opacity=".15"/>
+                    <stop offset="100%" stop-color="#34d399" stop-opacity=".03"/>
+                </linearGradient>
+                <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#38bdf8" opacity=".7"/>
+                </marker>
+                <marker id="arrowViolet" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#a78bfa" opacity=".7"/>
+                </marker>
+                <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#34d399" opacity=".7"/>
+                </marker>
+                <marker id="arrowAmber" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                    <polygon points="0 0, 8 3, 0 6" fill="#fbbf24" opacity=".7"/>
+                </marker>
+            </defs>
+
+            <!-- Background -->
+            <rect x="0" y="0" width="900" height="560" rx="12" fill="#1e293b"/>
+
+            <!-- ── LAN Box ── -->
+            <rect x="20" y="16" width="860" height="528" rx="10" fill="none" stroke="#334155" stroke-width="1" stroke-dasharray="6,4"/>
+            <text x="40" y="42" fill="#64748b" font-size="12" font-weight="600" letter-spacing="1">HEIMNETZWERK / VPN</text>
+
+            <!-- ── BaluPi ── -->
+            <rect x="320" y="68" width="260" height="160" rx="10" fill="url(#gPi)" stroke="#38bdf8" stroke-opacity=".35" stroke-width="1.5"/>
+            <text x="450" y="96" fill="#38bdf8" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="1">BALUPI (RASPBERRY PI)</text>
+            <text x="450" y="120" fill="#94a3b8" font-size="11" text-anchor="middle">FastAPI (Minimal) · SQLite</text>
+            <text x="450" y="140" fill="#94a3b8" font-size="11" text-anchor="middle">SATA SSD · 24/7 · ~4W</text>
+            <line x1="345" y1="156" x2="555" y2="156" stroke="#334155" stroke-width="1"/>
+            <text x="450" y="175" fill="#64748b" font-size="10" text-anchor="middle">Hot Storage (20% der Dateien)</text>
+            <text x="450" y="192" fill="#64748b" font-size="10" text-anchor="middle">Pending Upload Queue</text>
+            <text x="450" y="209" fill="#64748b" font-size="10" text-anchor="middle">User-DB Spiegel (read-only)</text>
+
+            <!-- ── BaluHost NAS ── -->
+            <rect x="620" y="290" width="240" height="150" rx="10" fill="url(#gNas)" stroke="#a78bfa" stroke-opacity=".35" stroke-width="1.5"/>
+            <text x="740" y="320" fill="#a78bfa" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="1">BALUHOST NAS</text>
+            <text x="740" y="344" fill="#94a3b8" font-size="11" text-anchor="middle">FastAPI (Full) · PostgreSQL</text>
+            <text x="740" y="364" fill="#94a3b8" font-size="11" text-anchor="middle">RAID · ~65W · On-Demand</text>
+            <line x1="645" y1="380" x2="835" y2="380" stroke="#334155" stroke-width="1"/>
+            <text x="740" y="398" fill="#64748b" font-size="10" text-anchor="middle">Alle Dateien (100%)</text>
+            <text x="740" y="415" fill="#64748b" font-size="10" text-anchor="middle">SMART, RAID, Backups, Scheduler</text>
+
+            <!-- ── Clients ── -->
+            <!-- Mobile -->
+            <rect x="40" y="310" width="180" height="100" rx="10" fill="url(#gClient)" stroke="#34d399" stroke-opacity=".35" stroke-width="1.5"/>
+            <text x="130" y="338" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">📱 BALUAPP</text>
+            <text x="130" y="358" fill="#94a3b8" font-size="10" text-anchor="middle">Android · Kotlin</text>
+            <text x="130" y="376" fill="#94a3b8" font-size="10" text-anchor="middle">Fotos &amp; Dokumente</text>
+            <text x="130" y="394" fill="#fbbf24" font-size="10" font-weight="600" text-anchor="middle">→ Synct zuerst mit Pi</text>
+
+            <!-- Desktop -->
+            <rect x="40" y="430" width="180" height="90" rx="10" fill="url(#gClient)" stroke="#34d399" stroke-opacity=".35" stroke-width="1.5"/>
+            <text x="130" y="458" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">🖥️ BALUDESK</text>
+            <text x="130" y="477" fill="#94a3b8" font-size="10" text-anchor="middle">Electron · C++ Sync</text>
+            <text x="130" y="495" fill="#94a3b8" font-size="10" text-anchor="middle">Pi oder NAS (auto-detect)</text>
+
+            <!-- WebApp -->
+            <rect x="280" y="460" width="180" height="80" rx="10" fill="url(#gClient)" stroke="#34d399" stroke-opacity=".35" stroke-width="1.5"/>
+            <text x="370" y="488" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">🌐 WEBAPP</text>
+            <text x="370" y="508" fill="#94a3b8" font-size="10" text-anchor="middle">React · Active/Passive UI</text>
+            <text x="370" y="525" fill="#94a3b8" font-size="10" text-anchor="middle">Läuft auf Pi ODER NAS</text>
+
+            <!-- ════ ARROWS ════ -->
+
+            <!-- Mobile → Pi (primary, thick) -->
+            <line x1="220" y1="345" x2="320" y2="220" stroke="#34d399" stroke-width="2.5" stroke-opacity=".6" marker-end="url(#arrowGreen)"/>
+            <text x="248" y="268" fill="#34d399" font-size="9" font-weight="600" transform="rotate(-32,248,268)">PRIMÄR</text>
+
+            <!-- Desktop → Pi -->
+            <line x1="220" y1="460" x2="340" y2="228" stroke="#38bdf8" stroke-width="1.5" stroke-opacity=".4" marker-end="url(#arrowBlue)" stroke-dasharray="5,3"/>
+            
+            <!-- Desktop → NAS (fallback) -->
+            <line x1="220" y1="480" x2="620" y2="370" stroke="#a78bfa" stroke-width="1.5" stroke-opacity=".3" marker-end="url(#arrowViolet)" stroke-dasharray="5,3"/>
+            <text x="420" y="410" fill="#a78bfa" font-size="9" font-weight="600" transform="rotate(-14,420,410)">Fallback / Large Files</text>
+
+            <!-- Pi ↔ NAS (sync, thick, bidirectional) -->
+            <line x1="565" y1="200" x2="640" y2="290" stroke="#fbbf24" stroke-width="2.5" stroke-opacity=".6" marker-end="url(#arrowAmber)"/>
+            <line x1="635" y1="295" x2="570" y2="210" stroke="#fbbf24" stroke-width="2.5" stroke-opacity=".6" marker-end="url(#arrowAmber)"/>
+            <rect x="582" y="230" width="90" height="30" rx="6" fill="#1e293b" stroke="#fbbf24" stroke-opacity=".35" stroke-width="1"/>
+            <text x="627" y="250" fill="#fbbf24" font-size="10" font-weight="700" text-anchor="middle">HANDSHAKE</text>
+
+            <!-- WebApp → Pi -->
+            <line x1="370" y1="460" x2="420" y2="228" stroke="#38bdf8" stroke-width="1.5" stroke-opacity=".35" marker-end="url(#arrowBlue)" stroke-dasharray="5,3"/>
+
+            <!-- Status indicators -->
+            <circle cx="345" cy="75" r="5" fill="#34d399"/>
+            <text x="354" y="79" fill="#34d399" font-size="9" font-weight="600">ALWAYS ON</text>
+
+            <circle cx="645" cy="298" r="5" fill="#fbbf24"/>
+            <text x="654" y="302" fill="#fbbf24" font-size="9" font-weight="600">ON-DEMAND</text>
+        </svg>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ 80/20 PRINZIP ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Kernprinzip</div>
+    <h2 class="section-title">80/20 — Smart Tiering statt Full Mirror</h2>
+    <p class="section-desc">
+        Der Pi spiegelt nicht das gesamte NAS. Stattdessen hält er nur die Dateien, die aktiv genutzt werden. Das spart Speicher, Bandbreite und hält die Komplexität niedrig.
+    </p>
+
+    <div class="card-grid cols-2">
+        <div class="card">
+            <span class="icon">📸</span>
+            <h3>Mobile ➜ Pi First</h3>
+            <p>BaluApp (Android) synct Fotos und Dokumente <strong>immer zuerst auf den Pi</strong>. Der Pi ist per VPN erreichbar, verbraucht kaum Strom und queued alles für's NAS.</p>
+            <ul>
+                <li>Kamera-Backup landet sofort auf Pi-SSD</li>
+                <li>Dokumente (PDF, Office) werden gecacht</li>
+                <li>Pi synct asynchron zum NAS (wenn online)</li>
+                <li>Kein NAS-Wake nötig für Alltagsnutzung</li>
+            </ul>
+        </div>
+        <div class="card">
+            <span class="icon">🖥️</span>
+            <h3>Desktop ➜ Auto-Detect</h3>
+            <p>BaluDesk erkennt automatisch, ob NAS oder Pi verfügbar ist (mDNS). Für kleine Dateien bevorzugt er den Pi, für große direkt das NAS.</p>
+            <ul>
+                <li>Dateien &lt; 50MB → Pi (schnell, immer da)</li>
+                <li>Dateien &gt; 50MB → NAS direkt (USB 2.0 Bottleneck)</li>
+                <li>Pi-Cache wird als "Prefetch" genutzt</li>
+                <li>Offline-Queue wenn beides nicht erreichbar</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="callout success" style="margin-top:28px;">
+        <strong>💡 Angepasste Strategie:</strong> Statt den Pi als vollständigen NAS-Spiegel zu betreiben (was die 1 GB RAM und USB 2.0 überfordert), wird er als <strong>intelligenter Hot-Cache</strong> eingesetzt. Das reduziert die Implementierungskomplexität um ~40% — kein Full-Metadata-Sync nötig, nur die relevanten Dateien + ihre Metadaten.
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ SYNC-FLOW ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Sync-Strategie</div>
+    <h2 class="section-title">Mobile-First: BaluApp → BaluPi → BaluHost</h2>
+    <p class="section-desc">
+        Der optimierte Sync-Flow für die häufigste Nutzung: Fotos und Dokumente vom Smartphone.
+    </p>
+
+    <div class="flow-container">
+        <div class="flow-step">
+            <div class="num">1</div>
+            <div>
+                <strong>BaluApp nimmt Foto / erstellt Dokument</strong>
+                <p style="color:var(--text-secondary);font-size:.88rem;">Kamera-Backup oder manueller Upload. Datei wird in lokale Upload-Queue eingereiht.</p>
+            </div>
+        </div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step">
+            <div class="num">2</div>
+            <div>
+                <strong>Upload an BaluPi (immer verfügbar)</strong>
+                <p style="color:var(--text-secondary);font-size:.88rem;">Per VPN/LAN → Pi REST-API. Datei landet auf SSD. Metadaten in SQLite. Status: <code style="color:var(--accent-amber);">pending_nas_sync</code></p>
+            </div>
+        </div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step">
+            <div class="num">3</div>
+            <div>
+                <strong>Pi synct zum NAS (wenn online)</strong>
+                <p style="color:var(--text-secondary);font-size:.88rem;">Periodischer Check oder Handshake-Trigger. Alle <code style="color:var(--accent-amber);">pending_nas_sync</code> Dateien werden hochgeladen. Status wird <code style="color:var(--accent-green);">synced</code>.</p>
+            </div>
+        </div>
+        <div class="flow-arrow"></div>
+        <div class="flow-step">
+            <div class="num">4</div>
+            <div>
+                <strong>Cache-Eviction auf Pi</strong>
+                <p style="color:var(--text-secondary);font-size:.88rem;">Sobald zum NAS gesynct und Cache-Limit erreicht: älteste bereits-gesynchte Dateien werden vom Pi entfernt. Metadaten bleiben.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="callout">
+        <strong>Reverse-Flow (NAS → Pi → Client):</strong> Wenn BaluDesk eine Datei anfragt, die nur auf dem NAS liegt und der Pi sie nicht hat, gibt der Pi im Active Mode ein Redirect/Proxy an das NAS. Im Passive Mode meldet er <code>file_not_cached</code> — der Client zeigt dann den Metadaten-Eintrag aber ohne Download-Option.
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ HANDSHAKE ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Handshake-Protokoll</div>
+    <h2 class="section-title">Mode Transition: Active ↔ Passive</h2>
+    <p class="section-desc">
+        Der kritischste Teil des Systems: Was passiert, wenn das NAS aufwacht oder sich abschaltet?
+    </p>
+
+    <div class="compare-grid">
+        <div class="compare-card">
+            <h4>🟢 NAS wacht auf (Passive → Active)</h4>
+            <ul>
+                <li>Pi erkennt NAS via mDNS/Heartbeat</li>
+                <li>Pi sendet: <code>last_sync_ts</code> + pending_changes[]</li>
+                <li>NAS empfängt Uploads, merged Metadaten</li>
+                <li>NAS sendet: Änderungen seit <code>last_sync_ts</code></li>
+                <li>Pi aktualisiert lokalen Cache</li>
+                <li>Clients werden über Mode-Switch notifiziert</li>
+                <li>Pi wird Proxy, NAS wird Primary</li>
+            </ul>
+        </div>
+        <div class="compare-card">
+            <h4>🔴 NAS fährt runter (Active → Passive)</h4>
+            <ul>
+                <li>NAS sendet Shutdown-Broadcast</li>
+                <li>Pi empfängt aktuellen Metadaten-Snapshot</li>
+                <li>Pi bestätigt Readiness</li>
+                <li>NAS fährt runter</li>
+                <li>Pi wird Primary für alle Clients</li>
+                <li>Neue Uploads → Pending-Queue</li>
+                <li>Nicht-gecachte Dateien: <code>unavailable</code></li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="callout warn">
+        <strong>⚠️ Edge Case — Unerwarteter NAS-Ausfall:</strong> Wenn das NAS ohne Shutdown-Broadcast ausfällt, erkennt der Pi dies nach 3 fehlgeschlagenen Heartbeats (~30s) und wechselt automatisch in Passive Mode. Beim nächsten NAS-Start wird ein <strong>Full Reconciliation Handshake</strong> durchgeführt (dauert länger, prüft alle Metadaten).
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ API COMPAT ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">API-Design</div>
+    <h2 class="section-title">Gleiche Oberfläche, angepasster Scope</h2>
+    <p class="section-desc">
+        BaluPi exponiert die gleichen REST-Endpunkte wie BaluHost, sodass Clients nicht wissen müssen, mit wem sie sprechen. Nicht verfügbare Features geben <code>501 Not Available in Passive Mode</code> zurück.
+    </p>
+
+    <table class="styled-table">
+        <thead>
+            <tr>
+                <th>Endpunkt</th>
+                <th>BaluHost</th>
+                <th>BaluPi</th>
+                <th>Anmerkung</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>/api/auth/*</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag yes">✅ Read-Only Spiegel</span></td>
+                <td>User-DB wird bei Handshake synchronisiert</td>
+            </tr>
+            <tr>
+                <td><code>/api/files/upload</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag yes">✅ In Queue</span></td>
+                <td>Uploads landen auf SSD, werden gequeued für NAS</td>
+            </tr>
+            <tr>
+                <td><code>/api/files/download</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag part">⚠️ Nur Cache</span></td>
+                <td>Active: Proxy zum NAS · Passive: nur gecachte Files</td>
+            </tr>
+            <tr>
+                <td><code>/api/files/list</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag yes">✅ Metadaten</span></td>
+                <td>Zeigt alle Dateien (mit cached/not-cached Flag)</td>
+            </tr>
+            <tr>
+                <td><code>/api/sync/*</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag yes">✅ Lokal</span></td>
+                <td>Sync gegenüber Pi-Cache statt NAS-Storage</td>
+            </tr>
+            <tr>
+                <td><code>/api/system/*</code></td>
+                <td><span class="tag yes">✅ RAID, SMART</span></td>
+                <td><span class="tag no">❌</span></td>
+                <td>Pi hat kein RAID. Pi-eigenes <code>/api/pi/health</code></td>
+            </tr>
+            <tr>
+                <td><code>/api/backups/*</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag no">❌</span></td>
+                <td>Backups nur auf dem NAS</td>
+            </tr>
+            <tr>
+                <td><code>/api/shares/*</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag part">⚠️ Cached only</span></td>
+                <td>Sharing nur für Dateien im Cache</td>
+            </tr>
+            <tr>
+                <td><code>/api/mobile/*</code></td>
+                <td><span class="tag yes">✅ Full</span></td>
+                <td><span class="tag yes">✅ Primary</span></td>
+                <td>Mobile Registrierung + Sync direkt auf Pi</td>
+            </tr>
+            <tr>
+                <td style="color:var(--accent-violet);font-weight:600;"><code>/api/pi/*</code></td>
+                <td><span class="tag no">—</span></td>
+                <td><span class="tag pi">🆕 Neu</span></td>
+                <td><code>status</code>, <code>cache</code>, <code>wake-nas</code>, <code>sync-queue</code></td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- ════════════════════════════════════════ DATENHALTUNG ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Datenhaltung</div>
+    <h2 class="section-title">Storage-Layout auf dem Pi</h2>
+
+    <div class="card" style="font-family:monospace;font-size:.88rem;line-height:2;background:var(--bg-secondary);">
+        <span style="color:var(--accent);">/mnt/ssd/</span> &nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># SATA SSD (ext4, Journaling)</span><br>
+        ├── <span style="color:var(--accent-green);">cache/</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># Hot-Tier Dateien (LRU Eviction)</span><br>
+        │ &nbsp; ├── user_1/ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># Pro-User Verzeichnis</span><br>
+        │ &nbsp; │ &nbsp; ├── photos/ &nbsp; <span style="color:var(--text-muted);"># Kamera-Backup</span><br>
+        │ &nbsp; │ &nbsp; └── docs/ &nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># Dokumente</span><br>
+        │ &nbsp; └── user_2/<br>
+        ├── <span style="color:var(--accent-amber);">pending/</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># Noch nicht zum NAS gesynct</span><br>
+        ├── <span style="color:var(--accent-violet);">db/</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># SQLite (WAL-Modus)</span><br>
+        │ &nbsp; ├── balupi.db &nbsp;&nbsp; <span style="color:var(--text-muted);"># Metadaten, Cache-Index</span><br>
+        │ &nbsp; └── users.db &nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># User-Spiegel (read-only)</span><br>
+        └── <span style="color:var(--text-muted);">config/</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:var(--text-muted);"># BaluPi Konfiguration</span>
+    </div>
+
+    <div class="card-grid cols-2" style="margin-top:20px;">
+        <div class="card">
+            <h3>SQLite statt PostgreSQL</h3>
+            <p>Pi 3B+ hat nur 1 GB RAM. PostgreSQL würde allein ~100-200 MB fressen. SQLite im WAL-Modus bietet gleichzeitige Reads + sequentielle Writes — perfekt für den Use-Case.</p>
+        </div>
+        <div class="card">
+            <h3>Cache-Eviction Policy</h3>
+            <p><strong>Hybrid-LRU:</strong> Dateien, die vom User als "Always Available" markiert sind, werden nie evicted. Alles andere nach Last-Access-Time, wenn das Cache-Limit (konfigurierbar, z.B. 80% SSD) erreicht ist. Nur bereits zum NAS gesynchte Dateien werden evicted.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ CLIENT-ANPASSUNG ════════════════════════════════ -->
+<section>
+    <div class="section-label">Client-Anpassungen</div>
+    <h2 class="section-title">Was ändert sich für BaluApp &amp; BaluDesk?</h2>
+
+    <div class="card-grid cols-2">
+        <div class="card">
+            <span class="icon">📱</span>
+            <h3>BaluApp (Android) — Anpassungen</h3>
+            <ul>
+                <li><strong>Sync-Target Priorität:</strong> Pi &gt; NAS &gt; Offline-Queue</li>
+                <li><strong>Auto-Discovery:</strong> mDNS findet Pi (immer) und NAS (wenn an)</li>
+                <li><strong>Kamera-Backup:</strong> Geht immer zuerst an Pi</li>
+                <li><strong>Upload-Größe-Check:</strong> &gt;100 MB → direkt NAS (wenn da)</li>
+                <li><strong>Status-Anzeige:</strong> "Synced to Pi" / "Synced to NAS"</li>
+                <li><strong>VPN:</strong> Bestehende WireGuard-Integration reicht</li>
+            </ul>
+        </div>
+        <div class="card">
+            <span class="icon">🖥️</span>
+            <h3>BaluDesk (Desktop) — Anpassungen</h3>
+            <ul>
+                <li><strong>Server-Discovery:</strong> Bestehender mDNS-Code erweitern</li>
+                <li><strong>Dual-Target Sync:</strong> HTTP-Client lernt Failover Pi↔NAS</li>
+                <li><strong>UI:</strong> Neuer Status-Indikator (Pi/NAS/Offline)</li>
+                <li><strong>Große Dateien:</strong> Direkt an NAS (Pi-USB 2.0 Limit)</li>
+                <li><strong>Settings:</strong> "Prefer Pi" Toggle im Settings-Panel</li>
+                <li><strong>Remote-Server-Profile:</strong> Pi als Profil hinzufügbar</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="callout" style="margin-top:24px;">
+        <strong>🔑 Entscheidende Vereinfachung:</strong> Da die API-Oberfläche gleich bleibt, sind die Client-Anpassungen minimal. Im Kern ist es nur ein neuer <strong>Service-Discovery-Layer</strong> + Routing-Logik (welches Target bekommt welchen Upload). Die Sync-Engine, Conflict-Resolution und Auth bleiben unverändert.
+    </div>
+</section>
+
+<!-- ═══════════════════════════════════════ FRONTEND MODES ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">WebApp Frontend</div>
+    <h2 class="section-title">Zwei Modi — Eine UI</h2>
+    <p class="section-desc">
+        Das bestehende React-Frontend bekommt eine Mode-Awareness. Komponenten, die nur im Active Mode relevant sind, werden ausgeblendet.
+    </p>
+
+    <div class="compare-grid">
+        <div class="compare-card" style="border-color:rgba(52,211,153,.25);">
+            <h4><span style="color:var(--accent-green);">🟢</span> Active Mode (NAS + Pi)</h4>
+            <ul>
+                <li>Voller Funktionsumfang</li>
+                <li>Dashboard mit NAS-Stats</li>
+                <li>RAID-Management Panel</li>
+                <li>System-Monitoring (CPU, RAM, SMART)</li>
+                <li>Backup & Restore</li>
+                <li>Scheduler Dashboard</li>
+                <li>File Manager: alle Dateien</li>
+                <li>Pi-Status-Widget (klein, informativ)</li>
+            </ul>
+        </div>
+        <div class="compare-card" style="border-color:rgba(251,191,36,.25);">
+            <h4><span style="color:var(--accent-amber);">🟡</span> Passive Mode (nur Pi)</h4>
+            <ul>
+                <li>Reduziertes Dashboard</li>
+                <li>File Manager: nur gecachte Dateien</li>
+                <li>Cache-Management UI</li>
+                <li>Sync-Queue Anzeige (pending to NAS)</li>
+                <li>NAS-Wake Button ("NAS aufwecken")</li>
+                <li>Pi Health (SSD-Nutzung, Uptime, Temp)</li>
+                <li><em style="color:var(--text-muted);">Grayed out: RAID, SMART, Backup, Scheduler</em></li>
+                <li>Banner: "⚡ Energiesparmodus — NAS ist aus"</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ HW LIMITS ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Hardware-Realität</div>
+    <h2 class="section-title">Raspberry Pi 3B+ — Grenzen kennen</h2>
+
+    <table class="styled-table">
+        <thead>
+            <tr>
+                <th>Ressource</th>
+                <th>Pi 3B+</th>
+                <th>Implikation</th>
+                <th>Mitigation</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>CPU</td>
+                <td>4× A53 @ 1.4 GHz</td>
+                <td>FastAPI mit 1-2 Uvicorn Workers</td>
+                <td>Async I/O, kein Heavy Processing</td>
+            </tr>
+            <tr>
+                <td>RAM</td>
+                <td>1 GB</td>
+                <td>SQLite statt PostgreSQL</td>
+                <td>Streaming Uploads, kein In-Memory-Cache</td>
+            </tr>
+            <tr>
+                <td>USB</td>
+                <td style="color:var(--accent-rose);">USB 2.0 (max ~35 MB/s)</td>
+                <td>SSD-Bottleneck</td>
+                <td>Große Dateien direkt ans NAS routen</td>
+            </tr>
+            <tr>
+                <td>Netzwerk</td>
+                <td>~300 Mbit/s effektiv</td>
+                <td>Reicht für Fotos/Docs</td>
+                <td>Ausreichend für 80/20-Nutzung</td>
+            </tr>
+            <tr>
+                <td>Strom</td>
+                <td style="color:var(--accent-green);">~4W</td>
+                <td>24/7 betreibbar für ~8€/Jahr</td>
+                <td>—</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="callout warn" style="margin-top:24px;">
+        <strong>💡 Upgrade-Empfehlung:</strong> Falls die Performance im Praxistest nicht reicht, ist ein <strong>Pi 4 (2 GB+)</strong> ein Drop-In Replacement: USB 3.0 (~400 MB/s SSD), echtes Gigabit-Ethernet, 2-8 GB RAM. Der Pi 3B+ ist ein valider Prototyp — aber für Dauerbetrieb mit mehreren gleichzeitigen Clients wäre ein Pi 4/5 besser.
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ PHASEN ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Implementierung</div>
+    <h2 class="section-title">Phasenplan (angepasst an 80/20)</h2>
+    <p class="section-desc">
+        Durch den Fokus auf Hot-Cache statt Full-Mirror reduziert sich die Komplexität deutlich. Der Mobile-First-Ansatz wird priorisiert.
+    </p>
+
+    <div class="phase-list">
+        <div class="phase-item">
+            <div class="phase-num p0">P0</div>
+            <div class="phase-body">
+                <h4>Pi Setup &amp; Proof of Concept</h4>
+                <p>Raspberry Pi OS Lite, SSD-Mount (ext4), Python 3.11, FastAPI Skeleton. Benchmark: SSD-Throughput, RAM-Nutzung, Netzwerk.</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>3-4 Tage</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-green);">Kritisch</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="phase-item">
+            <div class="phase-num p1">P1</div>
+            <div class="phase-body">
+                <h4>BaluPi Minimal-Backend</h4>
+                <p>Fork von BaluHost-Backend. SQLite-Adapter. Nur Core-Endpunkte: Auth (read-only Spiegel), File Upload/Download, Sync, Mobile-API. Kein RAID, kein SMART, kein Scheduler.</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>2-3 Wochen</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-green);">Hoch</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="phase-item">
+            <div class="phase-num p2">P2</div>
+            <div class="phase-body">
+                <h4>Mobile-First: BaluApp → Pi Sync</h4>
+                <p>BaluApp lernt Pi-First-Routing. Kamera-Backup → Pi. Service Discovery (mDNS). Upload-Queue mit Priority (Pi > NAS). Status-Anzeige im App.</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>2 Wochen</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-green);">Hoch</strong></span>
+                    <span>Deps: <strong>P1</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="phase-item">
+            <div class="phase-num p3">P3</div>
+            <div class="phase-body">
+                <h4>Handshake-Protokoll &amp; NAS-Sync</h4>
+                <p>Pi ↔ NAS Bidirectional Sync. Mode Detection (Active/Passive). Pending-Queue Upload. Metadaten-Merge. Conflict Resolution. Heartbeat-Monitoring.</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>3-4 Wochen</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-amber);">Mittel</strong></span>
+                    <span>Deps: <strong>P1</strong></span>
+                    <span style="color:var(--accent-rose);">⚠️ Komplexeste Phase</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="phase-item">
+            <div class="phase-num p4">P4</div>
+            <div class="phase-body">
+                <h4>Cache-Layer &amp; Eviction</h4>
+                <p>LRU Eviction Policy. "Always Available" Markierung. Cache-Größen-Management. BaluDesk Smart-Routing (große Dateien → NAS direkt).</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>1-2 Wochen</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-amber);">Mittel</strong></span>
+                    <span>Deps: <strong>P3</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="phase-item">
+            <div class="phase-num p5">P5</div>
+            <div class="phase-body">
+                <h4>Frontend-Anpassung &amp; Hardening</h4>
+                <p>WebApp: Active/Passive Mode UI. BaluDesk: Server-Discovery Update. Testing aller Flows (Mobile→Pi→NAS, Pi-Ausfall, NAS-Ausfall). Stress-Tests auf Pi 3B+.</p>
+                <div class="phase-meta">
+                    <span>Aufwand: <strong>2-3 Wochen</strong></span>
+                    <span>Prio: <strong style="color:var(--accent-amber);">Mittel</strong></span>
+                    <span>Deps: <strong>P3, P4</strong></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div style="margin-top:28px;display:flex;gap:12px;flex-wrap:wrap;">
+        <div class="badge green" style="font-size:.9rem;padding:8px 18px;">Gesamt: ~10-14 Wochen</div>
+        <div class="badge blue" style="font-size:.9rem;padding:8px 18px;">~30% weniger als Full-Mirror Ansatz</div>
+        <div class="badge amber" style="font-size:.9rem;padding:8px 18px;">Mobile-Flow nach P2 testbar</div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ RISIKEN ═══════════════════════════════════ -->
+<section>
+    <div class="section-label">Risiken &amp; Mitigations</div>
+    <h2 class="section-title">Worauf achten?</h2>
+
+    <div class="card-grid cols-2">
+        <div class="card">
+            <span class="icon">⚠️</span>
+            <h3>Split-Brain Szenario</h3>
+            <p>NAS und Pi haben unterschiedliche Versionen derselben Datei (z.B. NAS separat gestartet + direkt bearbeitet).</p>
+            <ul>
+                <li><strong>Lösung:</strong> Vector Clocks oder Lamport Timestamps pro Datei</li>
+                <li>Beim Handshake: Conflict Detection auf File-Ebene</li>
+                <li>Worst Case: Keep-Both (Rename mit .conflict)</li>
+            </ul>
+        </div>
+        <div class="card">
+            <span class="icon">🔒</span>
+            <h3>Security: Physischer Zugriff</h3>
+            <p>Pi ist physisch leichter zugänglich als ein NAS im Schrank. Jemand könnte die SSD abziehen.</p>
+            <ul>
+                <li><strong>Lösung:</strong> LUKS-Verschlüsselung auf SSD</li>
+                <li>JWT-Secrets verschlüsselt speichern</li>
+                <li>User-Passwörter nie auf dem Pi (nur Token)</li>
+            </ul>
+        </div>
+        <div class="card">
+            <span class="icon">💾</span>
+            <h3>SSD-Wear auf dem Pi</h3>
+            <p>Ständige Writes (Uploads, SQLite WAL) belasten die SSD. Consumer SSDs haben begrenzte TBW.</p>
+            <ul>
+                <li><strong>Lösung:</strong> SSD mit hoher TBW wählen (>200 TBW)</li>
+                <li>Write Amplification minimieren (batch writes)</li>
+                <li>SMART-Monitoring auf dem Pi einrichten</li>
+            </ul>
+        </div>
+        <div class="card">
+            <span class="icon">🔌</span>
+            <h3>Stromausfall / Korruption</h3>
+            <p>Pi hat kein USV. Plötzlicher Stromausfall kann Daten korrumpieren.</p>
+            <ul>
+                <li><strong>Lösung:</strong> ext4 Journaling + SQLite WAL</li>
+                <li>Write-Barrier aktiviert</li>
+                <li>Optional: USB-USV (~15€) für 5 Min. Puffer</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- ════════════════════════════════════════ FAZIT ═══════════════════════════════════ -->
+<section style="text-align:center;padding-bottom:48px;">
+    <div class="section-label">Fazit</div>
+    <h2 class="section-title">Empfehlung</h2>
+    <p style="color:var(--text-secondary);max-width:700px;margin:0 auto 32px;font-size:1.05rem;">
+        Der 80/20-Ansatz mit Mobile-First macht BaluPi <strong>deutlich machbarer</strong> als ein Full-Mirror. Der Pi wird nicht zum Mini-NAS, sondern zum <strong>Smart-Cache</strong> — genau das, wofür der Pi 3B+ mit seinen Limitierungen gut geeignet ist.
+    </p>
+
+    <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:32px;">
+        <div class="badge green" style="font-size:.95rem;padding:10px 22px;">✅ Machbar mit Pi 3B+</div>
+        <div class="badge blue" style="font-size:.95rem;padding:10px 22px;">📱 Mobile-First Sync ab Phase 2</div>
+        <div class="badge amber" style="font-size:.95rem;padding:10px 22px;">⚡ ~120€/Jahr Stromersparnis</div>
+    </div>
+
+    <div class="callout success" style="max-width:700px;margin:0 auto;text-align:left;">
+        <strong>Nächster Schritt:</strong> Phase 0 starten — Pi aufsetzen, SSD mounten, FastAPI Skeleton deployen. Dann einen realistischen Benchmark fahren: Wie schnell ist Upload/Download über USB 2.0? Wie viel RAM bleibt bei laufendem Uvicorn? Das liefert die Daten für die Go/No-Go Entscheidung zum Pi 3B+ vs. Upgrade auf Pi 4.
+    </div>
+</section>
+
+</main>
+
+<footer>
+    <p>BaluPi Architecture Document &middot; BaluHost Ecosystem &middot; Feb 2026</p>
+    <p style="margin-top:8px;">
+        <a href="https://github.com/Xveyn/BaluHost">BaluHost</a> &middot;
+        <a href="https://github.com/Xveyn/BaluDesk">BaluDesk</a> &middot;
+        <a href="https://github.com/Xveyn/BaluApp">BaluApp</a>
+    </p>
+</footer>
+
+</body>
+</html>
