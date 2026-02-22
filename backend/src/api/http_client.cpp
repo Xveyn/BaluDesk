@@ -92,7 +92,7 @@ bool HttpClient::login(const std::string& username, const std::string& password)
         auto responseJson = json::parse(response);
         
         if (responseJson.contains("access_token")) {
-            authToken_ = responseJson["access_token"].get<std::string>();
+            setAuthToken(responseJson["access_token"].get<std::string>());
             Logger::info("Login successful, token acquired");
             return true;
         }
@@ -107,16 +107,19 @@ bool HttpClient::login(const std::string& username, const std::string& password)
 }
 
 void HttpClient::setAuthToken(const std::string& token) {
+    std::lock_guard<std::mutex> lock(tokenMutex_);
     authToken_ = token;
     Logger::debug("Auth token updated");
 }
 
 void HttpClient::clearAuthToken() {
+    std::lock_guard<std::mutex> lock(tokenMutex_);
     authToken_.clear();
     Logger::debug("Auth token cleared");
 }
 
 bool HttpClient::isAuthenticated() const {
+    std::lock_guard<std::mutex> lock(tokenMutex_);
     return !authToken_.empty();
 }
 
@@ -181,7 +184,7 @@ std::string HttpClient::refreshAccessToken(const std::string& refreshToken) {
 
         if (responseJson.contains("access_token")) {
             std::string newToken = responseJson["access_token"].get<std::string>();
-            authToken_ = newToken;
+            setAuthToken(newToken);
             Logger::info("Access token refreshed successfully");
             return newToken;
         }
@@ -261,7 +264,7 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
         }
 
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
 
         std::string url = baseUrl_ + "/api/files/upload";
@@ -382,7 +385,7 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
         }
 
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
 
         std::string url = baseUrl_ + "/api/files/upload";
@@ -517,7 +520,7 @@ bool HttpClient::uploadFileBatch(const std::vector<std::string>& localPaths,
         }
 
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
 
         std::string url = baseUrl_ + "/api/files/upload";
@@ -636,7 +639,7 @@ bool HttpClient::downloadFile(const std::string& remotePath, const std::string& 
         }
 
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
 
         // A1: Use path parameter format matching BaluHost: GET /api/files/download/{path}
@@ -881,13 +884,9 @@ void HttpClient::setVerbose(bool verbose) {
 // ============================================================================
 
 std::string HttpClient::performRequest(const std::string& url, const std::string& method, const std::string& body) {
-    // K4: Create a fresh CURL handle per request to avoid race conditions
-    // when sync runs in a detached thread while other API calls happen concurrently.
-    // This also fixes M8: CURLOPT_CUSTOMREQUEST persisting across calls.
-    CURL* handle = curl_easy_init();
-    if (!handle) {
-        throw std::runtime_error("Failed to create CURL handle");
-    }
+    // Use pooled handle instead of creating/destroying per request (reuses connections)
+    auto scopedHandle = handlePool_.acquire();
+    CURL* handle = scopedHandle.get();
 
     std::string responseBuffer;
     WriteCallbackData callbackData{&responseBuffer};
@@ -895,8 +894,11 @@ std::string HttpClient::performRequest(const std::string& url, const std::string
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    if (isAuthenticated()) {
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+    // Thread-safe token access: copy token under lock
+    std::string token = getAuthToken();
+    std::string authHeader;
+    if (!token.empty()) {
+        authHeader = "Authorization: Bearer " + token;
         headers = curl_slist_append(headers, authHeader.c_str());
     }
 
@@ -931,7 +933,7 @@ std::string HttpClient::performRequest(const std::string& url, const std::string
     curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &httpCode);
 
     curl_slist_free_all(headers);
-    curl_easy_cleanup(handle);
+    // Handle returned to pool automatically by ScopedHandle destructor
 
     if (res != CURLE_OK) {
         std::string error = "CURL error: " + std::string(curl_easy_strerror(res));
@@ -1077,7 +1079,7 @@ bool HttpClient::downloadFileRange(
         curl_easy_setopt(downloadCurl, CURLOPT_NOPROXY, "127.0.0.1;localhost");
         
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
         
         // Set Range header for resume
@@ -1164,7 +1166,7 @@ bool HttpClient::downloadFileWithProgress(
         }
         
         struct curl_slist* headers = nullptr;
-        std::string authHeader = "Authorization: Bearer " + authToken_;
+        std::string authHeader = "Authorization: Bearer " + getAuthToken();
         headers = curl_slist_append(headers, authHeader.c_str());
         
         // A1: Use path parameter format matching BaluHost: GET /api/files/download/{path}

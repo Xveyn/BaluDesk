@@ -5,6 +5,7 @@
 #include <memory>
 #include <functional>
 #include <stdexcept>
+#include <mutex>
 #include <curl/curl.h>
 #include "rate_limiter.h"
 #include "curl_handle_pool.h"
@@ -135,7 +136,10 @@ public:
     void setAuthToken(const std::string& token);
     void clearAuthToken();
     bool isAuthenticated() const;
-    std::string getAuthToken() const { return authToken_; }
+    std::string getAuthToken() const {
+        std::lock_guard<std::mutex> lock(tokenMutex_);
+        return authToken_;
+    }
 
     // Token refresh: POST /api/auth/refresh with refresh token
     // Returns new access token on success, throws on failure
@@ -214,9 +218,12 @@ private:
     long lowSpeedTime_;     // Seconds below lowSpeedLimit before aborting (default 60)
     bool verbose_;
 
-    // Upload optimization: rate limiter (55 req/60s) and connection pool (6 handles)
+    // Thread-safety: protects authToken_ from concurrent read/write
+    mutable std::mutex tokenMutex_;
+
+    // Upload optimization: rate limiter (55 req/60s) and connection pool (10 handles)
     RateLimiter uploadRateLimiter_{55, 60};
-    CurlHandlePool handlePool_{6};
+    CurlHandlePool handlePool_{10};
 };
 
 } // namespace baludesk
