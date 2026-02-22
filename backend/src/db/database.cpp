@@ -27,27 +27,34 @@ Database::~Database() {
 // ============================================================================
 
 bool Database::initialize() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Initializing database: {}", dbPath_);
-    
+
     int rc = sqlite3_open(dbPath_.c_str(), &db_);
     if (rc != SQLITE_OK) {
         Logger::error("Cannot open database: {}", sqlite3_errmsg(db_));
         return false;
     }
-    
+
     // Enable foreign keys
     executeQuery("PRAGMA foreign_keys = ON;");
-    
+
+    // Thread-safety: WAL mode allows concurrent reads + one writer
+    executeQuery("PRAGMA journal_mode=WAL;");
+    executeQuery("PRAGMA synchronous=NORMAL;");
+    executeQuery("PRAGMA busy_timeout=5000;");
+
     if (!runMigrations()) {
         Logger::error("Failed to run database migrations");
         return false;
     }
-    
+
     Logger::info("Database initialized successfully");
     return true;
 }
 
 bool Database::runMigrations() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Running database migrations");
     
     // Create sync_folders table
@@ -236,6 +243,7 @@ bool Database::runMigrations() {
 // ============================================================================
 
 bool Database::addSyncFolder(const SyncFolder& folder) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Adding sync folder: {} -> {}", folder.localPath, folder.remotePath);
 
     const char* sql = R"(
@@ -280,6 +288,7 @@ bool Database::addSyncFolder(const SyncFolder& folder) {
 }
 
 bool Database::updateSyncFolder(const SyncFolder& folder) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::debug("Updating sync folder: {}", folder.id);
 
     const char* sql = R"(
@@ -326,6 +335,7 @@ bool Database::updateSyncFolder(const SyncFolder& folder) {
 }
 
 bool Database::removeSyncFolder(const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Removing sync folder: {}", folderId);
     
     const char* sql = "DELETE FROM sync_folders WHERE id = ?;";
@@ -348,6 +358,7 @@ bool Database::removeSyncFolder(const std::string& folderId) {
 }
 
 SyncFolder Database::getSyncFolder(const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "SELECT id, local_path, remote_path, status, enabled, last_sync, sync_direction, conflict_resolution FROM sync_folders WHERE id = ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -390,6 +401,7 @@ SyncFolder Database::getSyncFolder(const std::string& folderId) {
 }
 
 std::vector<SyncFolder> Database::getSyncFolders() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::debug("Getting all sync folders");
 
     const char* sql = "SELECT id, local_path, remote_path, status, enabled, last_sync, sync_direction, conflict_resolution FROM sync_folders WHERE enabled = 1;";
@@ -441,6 +453,7 @@ std::vector<SyncFolder> Database::getSyncFolders() {
 // ============================================================================
 
 bool Database::upsertFileMetadata(const FileMetadata& metadata) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     // A4: Use composite key (path, folder_id) for ON CONFLICT
     const char* sql = R"(
         INSERT INTO file_metadata (path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime, last_synced_at)
@@ -478,6 +491,7 @@ bool Database::upsertFileMetadata(const FileMetadata& metadata) {
 }
 
 std::optional<FileMetadata> Database::getFileMetadata(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = R"(
         SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
         FROM file_metadata WHERE path = ?;
@@ -514,6 +528,7 @@ std::optional<FileMetadata> Database::getFileMetadata(const std::string& path) {
 }
 
 std::optional<FileMetadata> Database::getFileMetadata(const std::string& path, const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     // A4: Folder-scoped lookup using composite primary key
     const char* sql = R"(
         SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
@@ -554,6 +569,7 @@ std::optional<FileMetadata> Database::getFileMetadata(const std::string& path, c
 bool Database::upsertFileMetadata(const std::string& path, const std::string& folderId,
                                   uint64_t size, const std::string& checksum,
                                   const std::string& modifiedAt) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     FileMetadata metadata;
     metadata.path = path;
     metadata.folderId = folderId;
@@ -569,6 +585,7 @@ bool Database::upsertFileMetadata(const std::string& path, const std::string& fo
 bool Database::upsertFileMetadata(const std::string& path, const std::string& folderId,
                                   uint64_t size, const std::string& checksum,
                                   const std::string& modifiedAt, const std::string& localMtime) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     FileMetadata metadata;
     metadata.path = path;
     metadata.folderId = folderId;
@@ -583,6 +600,7 @@ bool Database::upsertFileMetadata(const std::string& path, const std::string& fo
 }
 
 std::vector<FileMetadata> Database::getFilesInFolder(const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = R"(
         SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
         FROM file_metadata
@@ -621,6 +639,7 @@ std::vector<FileMetadata> Database::getFilesInFolder(const std::string& folderId
 }
 
 std::vector<FileMetadata> Database::getChangedFilesSince(const std::string& timestamp) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = R"(
         SELECT path, folder_id, size, modified_at, checksum, is_directory, sync_status, local_mtime
         FROM file_metadata
@@ -659,6 +678,7 @@ std::vector<FileMetadata> Database::getChangedFilesSince(const std::string& time
 }
 
 bool Database::deleteFileMetadata(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "DELETE FROM file_metadata WHERE path = ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -673,6 +693,7 @@ bool Database::deleteFileMetadata(const std::string& path) {
 }
 
 bool Database::deleteFileMetadata(const std::string& path, const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     // H5: Folder-scoped delete to prevent cross-folder collisions on identical relative paths
     const char* sql = "DELETE FROM file_metadata WHERE path = ? AND folder_id = ?;";
 
@@ -689,6 +710,7 @@ bool Database::deleteFileMetadata(const std::string& path, const std::string& fo
 }
 
 bool Database::updateSyncFolderTimestamp(const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "UPDATE sync_folders SET last_sync = datetime('now') WHERE id = ?;";
     
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -708,6 +730,7 @@ bool Database::updateSyncFolderTimestamp(const std::string& folderId) {
 }
 
 bool Database::updateSyncFolderStatus(const std::string& folderId, const std::string& status) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "UPDATE sync_folders SET status = ? WHERE id = ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -732,6 +755,7 @@ bool Database::updateSyncFolderStatus(const std::string& folderId, const std::st
 // ============================================================================
 
 bool Database::updateSyncFolderSettings(const std::string& folderId, const std::string& syncDirection, const std::string& conflictResolution) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Updating settings for folder {}: direction={}, conflict={}", folderId, syncDirection, conflictResolution);
 
     const char* sql = "UPDATE sync_folders SET sync_direction = ?, conflict_resolution = ? WHERE id = ?;";
@@ -759,6 +783,7 @@ bool Database::updateSyncFolderSettings(const std::string& folderId, const std::
 // ============================================================================
 
 bool Database::setChangeToken(const std::string& folderId, const std::string& token) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "UPDATE sync_folders SET change_token = ? WHERE id = ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -779,6 +804,7 @@ bool Database::setChangeToken(const std::string& folderId, const std::string& to
 }
 
 std::string Database::getChangeToken(const std::string& folderId) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "SELECT change_token FROM sync_folders WHERE id = ?;";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -801,6 +827,7 @@ std::string Database::getChangeToken(const std::string& folderId) {
 // ============================================================================
 
 bool Database::logConflict(const Conflict& conflict) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::warn("Logging conflict for: {}", conflict.path);
     
     const char* sql = R"(
@@ -829,6 +856,7 @@ bool Database::logConflict(const Conflict& conflict) {
 }
 
 std::vector<Conflict> Database::getPendingConflicts() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = R"(
         SELECT id, path, folder_id, local_modified, remote_modified, resolution, resolved_at
         FROM conflicts 
@@ -863,6 +891,7 @@ std::vector<Conflict> Database::getPendingConflicts() {
 }
 
 bool Database::resolveConflict(const std::string& conflictId, const std::string& resolution) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Resolving conflict: {} with strategy: {}", conflictId, resolution);
     
     const char* sql = R"(
@@ -893,6 +922,7 @@ bool Database::resolveConflict(const std::string& conflictId, const std::string&
 // ============================================================================
 
 bool Database::addRemoteServerProfile(const RemoteServerProfile& profile) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Adding remote server profile: {}", profile.name);
     
     const char* sql = R"(
@@ -929,6 +959,7 @@ bool Database::addRemoteServerProfile(const RemoteServerProfile& profile) {
 }
 
 bool Database::updateRemoteServerProfile(const RemoteServerProfile& profile) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Updating remote server profile: {}", profile.name);
     
     const char* sql = R"(
@@ -964,6 +995,7 @@ bool Database::updateRemoteServerProfile(const RemoteServerProfile& profile) {
 }
 
 bool Database::deleteRemoteServerProfile(int id) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Deleting remote server profile: {}", id);
     
     const char* sql = "DELETE FROM remote_server_profiles WHERE id = ?;";
@@ -983,6 +1015,7 @@ bool Database::deleteRemoteServerProfile(int id) {
 }
 
 bool Database::clearAllRemoteServerProfiles() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Clearing all remote server profiles");
     
     const char* sql = "DELETE FROM remote_server_profiles;";
@@ -1001,6 +1034,7 @@ bool Database::clearAllRemoteServerProfiles() {
 }
 
 RemoteServerProfile Database::getRemoteServerProfile(int id) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "SELECT id, owner, name, ssh_host, ssh_port, ssh_username, ssh_private_key, vpn_profile_id, power_on_command, last_used, created_at, updated_at FROM remote_server_profiles WHERE id = ?;";
     sqlite3_stmt* stmt = prepareStatement(sql);
     
@@ -1030,8 +1064,9 @@ RemoteServerProfile Database::getRemoteServerProfile(int id) {
 }
 
 std::vector<RemoteServerProfile> Database::getRemoteServerProfiles(const std::string& owner) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     std::vector<RemoteServerProfile> profiles;
-    
+
     const char* sql = "SELECT id, owner, name, ssh_host, ssh_port, ssh_username, ssh_private_key, vpn_profile_id, power_on_command, last_used, created_at, updated_at FROM remote_server_profiles WHERE owner = ? ORDER BY name;";
     sqlite3_stmt* stmt = prepareStatement(sql);
     
@@ -1062,8 +1097,9 @@ std::vector<RemoteServerProfile> Database::getRemoteServerProfiles(const std::st
 }
 
 std::vector<RemoteServerProfile> Database::getRemoteServerProfiles() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     std::vector<RemoteServerProfile> profiles;
-    
+
     const char* sql = "SELECT id, owner, name, ssh_host, ssh_port, ssh_username, ssh_private_key, vpn_profile_id, power_on_command, last_used, created_at, updated_at FROM remote_server_profiles ORDER BY name;";
     sqlite3_stmt* stmt = prepareStatement(sql);
     
@@ -1098,6 +1134,7 @@ std::vector<RemoteServerProfile> Database::getRemoteServerProfiles() {
 // ============================================================================
 
 bool Database::addVPNProfile(const VPNProfile& profile) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Adding VPN profile: {}", profile.name);
     
     const char* sql = R"(
@@ -1129,6 +1166,7 @@ bool Database::addVPNProfile(const VPNProfile& profile) {
 }
 
 bool Database::updateVPNProfile(const VPNProfile& profile) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Updating VPN profile: {}", profile.name);
     
     const char* sql = R"(
@@ -1160,6 +1198,7 @@ bool Database::updateVPNProfile(const VPNProfile& profile) {
 }
 
 bool Database::deleteVPNProfile(int id) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     Logger::info("Deleting VPN profile: {}", id);
     
     const char* sql = "DELETE FROM vpn_profiles WHERE id = ?;";
@@ -1179,6 +1218,7 @@ bool Database::deleteVPNProfile(int id) {
 }
 
 VPNProfile Database::getVPNProfile(int id) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "SELECT id, name, vpn_type, description, config_content, certificate, private_key, auto_connect, created_at, updated_at FROM vpn_profiles WHERE id = ?;";
     sqlite3_stmt* stmt = prepareStatement(sql);
     
@@ -1204,8 +1244,9 @@ VPNProfile Database::getVPNProfile(int id) {
 }
 
 std::vector<VPNProfile> Database::getVPNProfiles() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     std::vector<VPNProfile> profiles;
-    
+
     const char* sql = "SELECT id, name, vpn_type, description, config_content, certificate, private_key, auto_connect, created_at, updated_at FROM vpn_profiles ORDER BY name;";
     sqlite3_stmt* stmt = prepareStatement(sql);
     
@@ -1241,6 +1282,7 @@ std::vector<VPNProfile> Database::getVPNProfiles() {
 bool Database::logActivity(const std::string& activityType, const std::string& filePath,
                           const std::string& folderId, const std::string& details,
                           int64_t fileSize, const std::string& status) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = R"(
         INSERT INTO activity_logs (activity_type, file_path, folder_id, details, file_size, status)
         VALUES (?, ?, ?, ?, ?, ?);
@@ -1269,6 +1311,7 @@ bool Database::logActivity(const std::string& activityType, const std::string& f
 
 std::vector<ActivityLog> Database::getActivityLogs(int limit, const std::string& activityType,
                                                    const std::string& startDate, const std::string& endDate) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     std::vector<ActivityLog> logs;
 
     // K5: Use prepared statements to prevent SQL injection
@@ -1317,6 +1360,7 @@ std::vector<ActivityLog> Database::getActivityLogs(int limit, const std::string&
 }
 
 bool Database::clearActivityLogs(const std::string& beforeDate) {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     if (beforeDate.empty()) {
         // Delete all logs
         if (!executeQuery("DELETE FROM activity_logs;")) {
@@ -1344,6 +1388,7 @@ bool Database::clearActivityLogs(const std::string& beforeDate) {
 }
 
 int Database::cleanupOldFailedLogs() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     const char* sql = "DELETE FROM activity_logs WHERE status = 'failed' AND timestamp < datetime('now', '-1 day');";
 
     sqlite3_stmt* stmt = prepareStatement(sql);
@@ -1369,18 +1414,22 @@ int Database::cleanupOldFailedLogs() {
 // ============================================================================
 
 bool Database::beginTransaction() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     return executeQuery("BEGIN TRANSACTION;");
 }
 
 bool Database::commitTransaction() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     return executeQuery("COMMIT;");
 }
 
 bool Database::rollbackTransaction() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     return executeQuery("ROLLBACK;");
 }
 
 std::string Database::generateId() {
+    std::lock_guard<std::recursive_mutex> lock(dbMutex_);
     // Generate a UUID-like ID
     std::random_device rd;
     std::mt19937 gen(rd());

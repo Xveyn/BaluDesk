@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <mutex>
 #include <sqlite3.h>
 
 namespace baludesk {
@@ -151,6 +152,9 @@ private:
 
     std::string dbPath_;
     sqlite3* db_;
+
+    // Thread-safety: recursive_mutex allows nested calls (e.g. upsertFileMetadata overloads)
+    mutable std::recursive_mutex dbMutex_;
 };
 
 } // namespace baludesk
