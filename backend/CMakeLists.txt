@@ -68,6 +68,8 @@ set(SOURCES
     src/utils/sha256.cpp
     src/sync/conflict_resolver.cpp
     src/api/http_client.cpp
+    src/api/rate_limiter.cpp
+    src/api/curl_handle_pool.cpp
     src/db/database.cpp
     src/ipc/ipc_server_fixed.cpp
     src/services/ssh_service.cpp
@@ -206,6 +208,8 @@ if(BUILD_TESTS)
         src/sync/sync_engine.cpp
         src/sync/conflict_resolver.cpp
         src/api/http_client.cpp
+        src/api/rate_limiter.cpp
+        src/api/curl_handle_pool.cpp
         src/db/database.cpp
         src/utils/sha256.cpp
     )

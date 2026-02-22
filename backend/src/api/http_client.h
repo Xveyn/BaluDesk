@@ -6,6 +6,8 @@
 #include <functional>
 #include <stdexcept>
 #include <curl/curl.h>
+#include "rate_limiter.h"
+#include "curl_handle_pool.h"
 
 namespace baludesk {
 
@@ -211,6 +213,10 @@ private:
     long lowSpeedLimit_;    // Minimum bytes/sec before considering stalled (default 1024)
     long lowSpeedTime_;     // Seconds below lowSpeedLimit before aborting (default 60)
     bool verbose_;
+
+    // Upload optimization: rate limiter (55 req/60s) and connection pool (6 handles)
+    RateLimiter uploadRateLimiter_{55, 60};
+    CurlHandlePool handlePool_{6};
 };
 
 } // namespace baludesk

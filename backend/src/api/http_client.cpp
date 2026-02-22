@@ -251,13 +251,11 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
     }
 
     try {
-        CURL* uploadCurl = curl_easy_init();
-        if (!uploadCurl) {
-            Logger::error("Failed to create upload handle");
-            return false;
-        }
-        curl_easy_setopt(uploadCurl, CURLOPT_NOPROXY, "127.0.0.1;localhost");
-        curl_easy_setopt(uploadCurl, CURLOPT_PROXY, "");
+        // Rate limit: wait for a slot before uploading
+        uploadRateLimiter_.acquire();
+
+        auto scopedHandle = handlePool_.acquire();
+        CURL* uploadCurl = scopedHandle.get();
         if (verbose_) {
             curl_easy_setopt(uploadCurl, CURLOPT_VERBOSE, 1L);
         }
@@ -315,7 +313,7 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
 
         curl_mime_free(mime);
         curl_slist_free_all(headers);
-        curl_easy_cleanup(uploadCurl);
+        // Handle is returned to pool automatically by ScopedHandle destructor
 
         if (res != CURLE_OK) {
             Logger::error("Upload failed: {}", curl_easy_strerror(res));
@@ -374,13 +372,11 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
     }
 
     try {
-        CURL* uploadCurl = curl_easy_init();
-        if (!uploadCurl) {
-            Logger::error("Failed to create upload handle");
-            return false;
-        }
-        curl_easy_setopt(uploadCurl, CURLOPT_NOPROXY, "127.0.0.1;localhost");
-        curl_easy_setopt(uploadCurl, CURLOPT_PROXY, "");
+        // Rate limit: wait for a slot before uploading
+        uploadRateLimiter_.acquire();
+
+        auto scopedHandle = handlePool_.acquire();
+        CURL* uploadCurl = scopedHandle.get();
         if (verbose_) {
             curl_easy_setopt(uploadCurl, CURLOPT_VERBOSE, 1L);
         }
@@ -445,7 +441,7 @@ bool HttpClient::uploadFile(const std::string& localPath, const std::string& rem
 
         curl_mime_free(mime);
         curl_slist_free_all(headers);
-        curl_easy_cleanup(uploadCurl);
+        // Handle is returned to pool automatically by ScopedHandle destructor
 
         if (res != CURLE_OK) {
             Logger::error("Upload failed: {}", curl_easy_strerror(res));
@@ -511,13 +507,11 @@ bool HttpClient::uploadFileBatch(const std::vector<std::string>& localPaths,
     }
 
     try {
-        CURL* uploadCurl = curl_easy_init();
-        if (!uploadCurl) {
-            Logger::error("Failed to create upload handle");
-            return false;
-        }
-        curl_easy_setopt(uploadCurl, CURLOPT_NOPROXY, "127.0.0.1;localhost");
-        curl_easy_setopt(uploadCurl, CURLOPT_PROXY, "");
+        // Rate limit: wait for a slot before uploading
+        uploadRateLimiter_.acquire();
+
+        auto scopedHandle = handlePool_.acquire();
+        CURL* uploadCurl = scopedHandle.get();
         if (verbose_) {
             curl_easy_setopt(uploadCurl, CURLOPT_VERBOSE, 1L);
         }
@@ -567,7 +561,7 @@ bool HttpClient::uploadFileBatch(const std::vector<std::string>& localPaths,
 
         curl_mime_free(mime);
         curl_slist_free_all(headers);
-        curl_easy_cleanup(uploadCurl);
+        // Handle is returned to pool automatically by ScopedHandle destructor
 
         if (res != CURLE_OK) {
             Logger::error("Batch upload failed: {}", curl_easy_strerror(res));
@@ -635,15 +629,8 @@ bool HttpClient::downloadFile(const std::string& remotePath, const std::string& 
     }
 
     try {
-        CURL* downloadCurl = curl_easy_init();
-        if (!downloadCurl) {
-            Logger::error("Failed to create download handle");
-            outFile.close();
-            std::filesystem::remove(tmpPath);
-            return false;
-        }
-        curl_easy_setopt(downloadCurl, CURLOPT_NOPROXY, "127.0.0.1;localhost");
-        curl_easy_setopt(downloadCurl, CURLOPT_PROXY, "");
+        auto scopedHandle = handlePool_.acquire();
+        CURL* downloadCurl = scopedHandle.get();
         if (verbose_) {
             curl_easy_setopt(downloadCurl, CURLOPT_VERBOSE, 1L);
         }
@@ -657,6 +644,7 @@ bool HttpClient::downloadFile(const std::string& remotePath, const std::string& 
 
         curl_easy_setopt(downloadCurl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(downloadCurl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(downloadCurl, CURLOPT_HTTPGET, 1L);
         // K2: Stream directly to file instead of buffering in RAM
         curl_easy_setopt(downloadCurl, CURLOPT_WRITEFUNCTION, writeFileCallback);
         curl_easy_setopt(downloadCurl, CURLOPT_WRITEDATA, &outFile);
@@ -668,7 +656,7 @@ bool HttpClient::downloadFile(const std::string& remotePath, const std::string& 
         curl_easy_getinfo(downloadCurl, CURLINFO_RESPONSE_CODE, &httpCode);
 
         curl_slist_free_all(headers);
-        curl_easy_cleanup(downloadCurl);
+        // Handle returned to pool by ScopedHandle destructor
         outFile.close();
 
         if (res != CURLE_OK) {
