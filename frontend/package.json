@@ -4,9 +4,10 @@
   "description": "BaluDesk Desktop Client - Electron Frontend",
   "main": "dist/main/main.js",
   "scripts": {
-    "dev": "npm run compile && concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
+    "dev": "concurrently \"npm run dev:vite\" \"npm run dev:compile\" \"npm run dev:electron\"",
     "dev:vite": "vite",
-    "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "dev:compile": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
+    "dev:electron": "wait-on http://localhost:5173 && wait-on dist/main/main.js && electron .",
     "compile": "tsc -p tsconfig.main.json",
     "clean": "rimraf dist-electron dist",
     "build": "vite build && npm run compile && electron-builder",

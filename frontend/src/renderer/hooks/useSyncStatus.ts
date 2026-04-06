@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { BackendMessage } from '../../lib/types';
+import { getCached, setCache } from './ipcCache';
 
 export interface SyncStats {
   status: string;
@@ -61,86 +62,98 @@ export interface RaidStatus {
 }
 
 export function useSyncStatus() {
-  const [syncStats, setSyncStats] = useState<SyncStats | null>(null);
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
-  const [raidStatus, setRaidStatus] = useState<RaidStatus | null>(null);
-  const [loading, setLoading] = useState(false);
+  const cachedSync = getCached<SyncStats>('sync_stats');
+  const cachedSystem = getCached<SystemInfo>('system_info');
+  const cachedRaid = getCached<RaidStatus>('raid_status');
+  const hasCached = !!(cachedSync || cachedSystem);
+  const [syncStats, setSyncStats] = useState<SyncStats | null>(cachedSync ?? null);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(cachedSystem ?? null);
+  const [raidStatus, setRaidStatus] = useState<RaidStatus | null>(cachedRaid ?? null);
+  const [loading, setLoading] = useState(!hasCached);
   const [syncError, setSyncError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch sync state
-      try {
-        const syncResponse = await window.electronAPI.sendBackendCommand({ type: 'get_sync_state' });
-        if (syncResponse?.success && syncResponse.data) {
-          setSyncStats(syncResponse.data);
-        } else if (syncResponse) {
-          const legacy = syncResponse as any;
-          if (legacy.type === 'sync_state') {
-            const mapped: SyncStats = {
-              status: legacy.status || 'idle',
-              uploadSpeed: legacy.upload_speed ?? legacy.uploadSpeed ?? 0,
-              downloadSpeed: legacy.download_speed ?? legacy.downloadSpeed ?? 0,
-              pendingUploads: legacy.pendingUploads ?? legacy.pending_uploads ?? 0,
-              pendingDownloads: legacy.pendingDownloads ?? legacy.pending_downloads ?? 0,
-              lastSync: legacy.last_sync ?? legacy.lastSync ?? ''
-            };
-            if ((legacy.syncFolderCount ?? legacy.sync_folder_count) !== undefined) {
-              mapped.syncFolderCount = legacy.syncFolderCount ?? legacy.sync_folder_count;
-            }
-            setSyncStats(prev => prev ? { ...prev, ...mapped } : mapped);
+      // Fetch all three in parallel instead of sequentially
+      const [syncResponse, sysResponse, raidResponse] = await Promise.all([
+        window.electronAPI.sendBackendCommand({ type: 'get_sync_state' }).catch(err => {
+          console.error('Failed to fetch sync state:', err);
+          return null;
+        }),
+        window.electronAPI.sendBackendCommand({ type: 'get_system_info' }).catch(err => {
+          console.error('Failed to fetch system info:', err);
+          return null;
+        }),
+        window.electronAPI.sendBackendCommand({ type: 'get_raid_status' }).catch(err => {
+          console.error('Failed to fetch RAID status:', err);
+          return null;
+        }),
+      ]);
+
+      // Process sync state
+      if (syncResponse?.success && syncResponse.data) {
+        setSyncStats(syncResponse.data);
+        setCache('sync_stats', syncResponse.data);
+      } else if (syncResponse) {
+        const legacy = syncResponse as any;
+        if (legacy.type === 'sync_state') {
+          const mapped: SyncStats = {
+            status: legacy.status || 'idle',
+            uploadSpeed: legacy.upload_speed ?? legacy.uploadSpeed ?? 0,
+            downloadSpeed: legacy.download_speed ?? legacy.downloadSpeed ?? 0,
+            pendingUploads: legacy.pendingUploads ?? legacy.pending_uploads ?? 0,
+            pendingDownloads: legacy.pendingDownloads ?? legacy.pending_downloads ?? 0,
+            lastSync: legacy.last_sync ?? legacy.lastSync ?? ''
+          };
+          if ((legacy.syncFolderCount ?? legacy.sync_folder_count) !== undefined) {
+            mapped.syncFolderCount = legacy.syncFolderCount ?? legacy.sync_folder_count;
           }
+          setSyncStats(prev => {
+            const merged = prev ? { ...prev, ...mapped } : mapped;
+            setCache('sync_stats', merged);
+            return merged;
+          });
         }
-      } catch (err) {
-        console.error('Failed to fetch sync state:', err);
       }
 
-      // Fetch system info
-      try {
-        const sysResponse = await window.electronAPI.sendBackendCommand({ type: 'get_system_info' });
-        if (sysResponse?.success) {
-          const raw = sysResponse.data as any;
-          const normalized: any = { ...raw };
-          if (raw?.cpu) {
-            normalized.cpu = {
-              usage: raw.cpu.usage ?? 0,
-              cores: raw.cpu.cores ?? raw.cpu.coreCount ?? 0,
-              frequency_mhz: raw.cpu.frequency_mhz ?? raw.cpu.frequency ?? null,
-              model: raw.cpu.model ?? null,
-            };
-          }
-          if (raw?.disk) {
-            normalized.disk = {
-              total: raw.disk.total ?? raw.disk.total_bytes ?? 0,
-              used: raw.disk.used ?? (raw.disk.total - (raw.disk.available ?? raw.disk.free ?? 0)),
-              available: raw.disk.available ?? raw.disk.free ?? null,
-            };
-          }
-          if (typeof raw?.uptime === 'number') {
-            let uptimeSeconds = raw.uptime;
-            if (uptimeSeconds > 1e12) uptimeSeconds = Math.floor(uptimeSeconds / 1000);
-            normalized.uptime = uptimeSeconds;
-          }
-          if (typeof raw?.serverUptime === 'number') {
-            let sUptime = raw.serverUptime;
-            if (sUptime > 1e12) sUptime = Math.floor(sUptime / 1000);
-            normalized.serverUptime = sUptime;
-          }
-          setSystemInfo(normalized as SystemInfo);
+      // Process system info
+      if (sysResponse?.success) {
+        const raw = sysResponse.data as any;
+        const normalized: any = { ...raw };
+        if (raw?.cpu) {
+          normalized.cpu = {
+            usage: raw.cpu.usage ?? 0,
+            cores: raw.cpu.cores ?? raw.cpu.coreCount ?? 0,
+            frequency_mhz: raw.cpu.frequency_mhz ?? raw.cpu.frequency ?? null,
+            model: raw.cpu.model ?? null,
+          };
         }
-      } catch (err) {
-        console.error('Failed to fetch system info:', err);
+        if (raw?.disk) {
+          normalized.disk = {
+            total: raw.disk.total ?? raw.disk.total_bytes ?? 0,
+            used: raw.disk.used ?? (raw.disk.total - (raw.disk.available ?? raw.disk.free ?? 0)),
+            available: raw.disk.available ?? raw.disk.free ?? null,
+          };
+        }
+        if (typeof raw?.uptime === 'number') {
+          let uptimeSeconds = raw.uptime;
+          if (uptimeSeconds > 1e12) uptimeSeconds = Math.floor(uptimeSeconds / 1000);
+          normalized.uptime = uptimeSeconds;
+        }
+        if (typeof raw?.serverUptime === 'number') {
+          let sUptime = raw.serverUptime;
+          if (sUptime > 1e12) sUptime = Math.floor(sUptime / 1000);
+          normalized.serverUptime = sUptime;
+        }
+        setSystemInfo(normalized as SystemInfo);
+        setCache('system_info', normalized as SystemInfo);
       }
 
-      // Fetch RAID status
-      try {
-        const raidResponse = await window.electronAPI.sendBackendCommand({ type: 'get_raid_status' });
-        if (raidResponse?.success) {
-          setRaidStatus(raidResponse.data);
-        }
-      } catch (err) {
-        console.error('Failed to fetch RAID status:', err);
+      // Process RAID status
+      if (raidResponse?.success) {
+        setRaidStatus(raidResponse.data);
+        setCache('raid_status', raidResponse.data);
       }
     } finally {
       setLoading(false);

@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useState, useCallback } from 'react';
 import {
   CheckCircle2, RefreshCw, Pause, AlertTriangle,
   ArrowUp, ArrowDown, ArrowUpDown, FolderSync,
 } from 'lucide-react';
 import { formatSpeed, formatBytes, formatRelativeTime, getFileName } from '../../../lib/formatters';
 import { SyncStats } from '../../hooks/useSyncStatus';
+import { useVisibilityPolling } from '../../hooks/useVisibilityPolling';
+import { getCached, setCache } from '../../hooks/ipcCache';
 
 interface SyncSummaryCardProps {
   syncStats: SyncStats | null;
@@ -88,28 +90,28 @@ function getDirectionInfo(direction: string) {
   }
 }
 
-export function SyncSummaryCard({ syncStats, syncError, loading }: SyncSummaryCardProps) {
-  const [folders, setFolders] = useState<SyncFolder[]>([]);
-  const [foldersLoading, setFoldersLoading] = useState(true);
+const CACHE_KEY = 'sync_folders';
 
-  const fetchFolders = async () => {
+export function SyncSummaryCard({ syncStats, syncError, loading }: SyncSummaryCardProps) {
+  const cachedFolders = getCached<SyncFolder[]>(CACHE_KEY);
+  const [folders, setFolders] = useState<SyncFolder[]>(cachedFolders ?? []);
+  const [foldersLoading, setFoldersLoading] = useState(!cachedFolders);
+
+  const fetchFolders = useCallback(async () => {
     try {
       const response = await window.electronAPI.sendBackendCommand({ type: 'get_folders' });
       if (response?.folders) {
         setFolders(response.folders);
+        setCache(CACHE_KEY, response.folders);
       }
     } catch (err) {
       console.error('Failed to fetch folders:', err);
     } finally {
       setFoldersLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchFolders();
-    const interval = setInterval(fetchFolders, 15000);
-    return () => clearInterval(interval);
   }, []);
+
+  useVisibilityPolling(fetchFolders, 15000);
 
   const handleSyncAll = async () => {
     try {

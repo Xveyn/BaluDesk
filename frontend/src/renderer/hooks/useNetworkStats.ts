@@ -1,4 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { useVisibilityPolling } from './useVisibilityPolling';
+import { getCached, setCache } from './ipcCache';
 
 export interface NetworkStats {
   uploadSpeed: number;
@@ -7,9 +9,12 @@ export interface NetworkStats {
   totalDownToday: number;
 }
 
+const CACHE_KEY = 'network_stats';
+
 export function useNetworkStats() {
-  const [stats, setStats] = useState<NetworkStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = getCached<NetworkStats>(CACHE_KEY);
+  const [stats, setStats] = useState<NetworkStats | null>(cached ?? null);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStats = useCallback(async () => {
@@ -19,6 +24,7 @@ export function useNetworkStats() {
       });
       if (response?.success && response.data) {
         setStats(response.data);
+        setCache(CACHE_KEY, response.data);
         setError(null);
       } else if (response?.error) {
         setError(response.error);
@@ -31,11 +37,7 @@ export function useNetworkStats() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 10000);
-    return () => clearInterval(interval);
-  }, [fetchStats]);
+  useVisibilityPolling(fetchStats, 10000);
 
   return { stats, loading, error, refetch: fetchStats };
 }

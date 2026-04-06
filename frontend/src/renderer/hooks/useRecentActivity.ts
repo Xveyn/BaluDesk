@@ -1,4 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
+import { useVisibilityPolling } from './useVisibilityPolling';
+import { getCached, setCache } from './ipcCache';
 
 export interface ActivityLog {
   id: string;
@@ -11,9 +13,12 @@ export interface ActivityLog {
   status: string;
 }
 
+const CACHE_KEY = 'recent_activity';
+
 export function useRecentActivity(limit: number = 8) {
-  const [activities, setActivities] = useState<ActivityLog[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cached = getCached<ActivityLog[]>(CACHE_KEY);
+  const [activities, setActivities] = useState<ActivityLog[]>(cached ?? []);
+  const [loading, setLoading] = useState(!cached);
 
   const fetchActivities = useCallback(async () => {
     try {
@@ -23,8 +28,10 @@ export function useRecentActivity(limit: number = 8) {
       });
       if (response?.success && response.data?.logs) {
         setActivities(response.data.logs);
+        setCache(CACHE_KEY, response.data.logs);
       } else if (response?.logs) {
         setActivities(response.logs);
+        setCache(CACHE_KEY, response.logs);
       }
     } catch (err) {
       console.error('Failed to fetch activity logs:', err);
@@ -33,11 +40,7 @@ export function useRecentActivity(limit: number = 8) {
     }
   }, [limit]);
 
-  useEffect(() => {
-    fetchActivities();
-    const interval = setInterval(fetchActivities, 15000);
-    return () => clearInterval(interval);
-  }, [fetchActivities]);
+  useVisibilityPolling(fetchActivities, 15000);
 
   return { activities, loading, refetch: fetchActivities };
 }

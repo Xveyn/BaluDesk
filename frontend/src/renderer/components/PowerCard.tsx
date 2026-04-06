@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Zap } from 'lucide-react';
+import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
+import { getCached, setCache } from '../hooks/ipcCache';
 
 interface PowerData {
   currentPower: number;
@@ -10,22 +12,14 @@ interface PowerData {
   dev_mode?: boolean;
 }
 
+const CACHE_KEY = 'power_data';
+
 export const PowerCard: React.FC = () => {
-  const [powerData, setPowerData] = useState<PowerData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = getCached<PowerData>(CACHE_KEY);
+  const [powerData, setPowerData] = useState<PowerData | null>(cached ?? null);
+  const [loading, setLoading] = useState(!cached);
 
-  useEffect(() => {
-    fetchPowerData();
-
-    // Poll every 10 seconds
-    const interval = setInterval(() => {
-      fetchPowerData();
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchPowerData = async () => {
+  const fetchPowerData = useCallback(async () => {
     try {
       const response = await window.electronAPI.sendBackendCommand({
         type: 'get_power_monitoring',
@@ -33,13 +27,16 @@ export const PowerCard: React.FC = () => {
 
       if (response?.success) {
         setPowerData(response.data);
+        setCache(CACHE_KEY, response.data);
         setLoading(false);
       }
     } catch (error) {
       console.error('Failed to fetch power data:', error);
       setLoading(false);
     }
-  };
+  }, []);
+
+  useVisibilityPolling(fetchPowerData, 10000);
 
   if (loading || !powerData) {
     return (
