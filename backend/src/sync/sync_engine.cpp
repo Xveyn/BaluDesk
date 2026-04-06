@@ -865,8 +865,8 @@ void SyncEngine::performDeltaSync(const SyncFolder& folder) {
         const uint64_t BATCH_SIZE_THRESHOLD = 1024 * 1024; // 1 MB
         const size_t MAX_BATCH_FILES = 50;
         const uint64_t MAX_BATCH_SIZE_BYTES = 50ULL * 1024 * 1024; // 50 MB
-        const size_t MAX_CONCURRENT = 4;
-        const size_t MAX_CONCURRENT_LARGE = 2;
+        const size_t MAX_CONCURRENT = 8;
+        const size_t MAX_CONCURRENT_LARGE = 4;
 
         struct BatchJob {
             std::string remoteDir;

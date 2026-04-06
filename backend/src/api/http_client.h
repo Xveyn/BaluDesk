@@ -221,9 +221,9 @@ private:
     // Thread-safety: protects authToken_ from concurrent read/write
     mutable std::mutex tokenMutex_;
 
-    // Upload optimization: rate limiter (55 req/60s) and connection pool (10 handles)
-    RateLimiter uploadRateLimiter_{55, 60};
-    CurlHandlePool handlePool_{10};
+    // Upload optimization: rate limiter (500 req/60s for LAN throughput) and connection pool (16 handles)
+    RateLimiter uploadRateLimiter_{500, 60};
+    CurlHandlePool handlePool_{16};
 };
 
 } // namespace baludesk

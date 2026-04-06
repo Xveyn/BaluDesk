@@ -107,8 +107,14 @@ void CurlHandlePool::resetHandle(CURL* handle) {
     // Connection cache: keep connections alive for up to 5 minutes
     curl_easy_setopt(handle, CURLOPT_MAXAGE_CONN, 300L);
 
-    // Larger upload buffer (512 KB instead of default 64 KB)
-    curl_easy_setopt(handle, CURLOPT_UPLOAD_BUFFERSIZE, 512L * 1024L);
+    // TCP_NODELAY: disable Nagle algorithm for lower latency
+    curl_easy_setopt(handle, CURLOPT_TCP_NODELAY, 1L);
+
+    // Larger upload buffer (2 MB for LAN throughput)
+    curl_easy_setopt(handle, CURLOPT_UPLOAD_BUFFERSIZE, 2L * 1024L * 1024L);
+
+    // Larger receive buffer (512 KB)
+    curl_easy_setopt(handle, CURLOPT_BUFFERSIZE, 512L * 1024L);
 
     // Bypass proxy for local addresses
     curl_easy_setopt(handle, CURLOPT_NOPROXY, "127.0.0.1;localhost");
