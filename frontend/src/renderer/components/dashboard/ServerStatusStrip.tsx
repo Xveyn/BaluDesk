@@ -13,6 +13,8 @@ interface ServerStatusStripProps {
   loading: boolean;
 }
 
+// TODO: Once backend implements `get_nas_status`, derive 'sleeping' state from the response.
+// Currently only 'online' (systemInfo present) and 'offline' (absent) are reachable.
 function deriveStatus(loading: boolean, systemInfo: ServerStatusStripProps['systemInfo']): ServerStatus {
   if (loading) return 'unknown';
   if (systemInfo) return 'online';
