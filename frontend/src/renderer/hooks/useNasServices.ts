@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useVisibilityPolling } from './useVisibilityPolling';
 import { getCached, setCache } from './ipcCache';
 
@@ -14,8 +14,10 @@ export function useNasServices() {
   const [services, setServices] = useState<NasService[]>(cached ?? []);
   const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
+  const permanentError = useRef(false);
 
   const fetchServices = useCallback(async () => {
+    if (permanentError.current) return;
     try {
       const response = await window.electronAPI.sendBackendCommand({
         type: 'get_services_status'
@@ -25,7 +27,13 @@ export function useNasServices() {
         setCache(CACHE_KEY, response.data.services);
         setError(null);
       } else if (response?.error) {
-        setError(response.error);
+        const msg: string = response.error || response.message || '';
+        if (msg.includes('403') || msg.includes('Admin') || msg.includes('Insufficient permissions')) {
+          setError('Admin required');
+          permanentError.current = true;
+        } else {
+          setError(msg);
+        }
       }
     } catch (err) {
       setError('Failed to fetch services status');

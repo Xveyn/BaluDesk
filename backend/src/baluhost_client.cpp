@@ -1,4 +1,5 @@
 #include "baluhost_client.h"
+#include "utils/credential_store.h"
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
@@ -296,9 +297,18 @@ std::optional<nlohmann::json> BaluhostClient::makeRequest(
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     
-    if (requireAuth && !authToken_.empty()) {
-        std::string auth_header = "Authorization: Bearer " + authToken_;
-        headers = curl_slist_append(headers, auth_header.c_str());
+    if (requireAuth) {
+        // Read token fresh from CredentialStore (may have been refreshed by SyncEngine)
+        std::string token = CredentialStore::loadToken("access_token");
+        if (token.empty()) {
+            token = authToken_;  // Fallback to in-memory token
+        } else if (token != authToken_) {
+            authToken_ = token;  // Keep in-memory copy updated
+        }
+        if (!token.empty()) {
+            std::string auth_header = "Authorization: Bearer " + token;
+            headers = curl_slist_append(headers, auth_header.c_str());
+        }
     }
     
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -506,7 +516,7 @@ std::optional<nlohmann::json> BaluhostClient::getRaidStatus() {
 }
 
 std::optional<nlohmann::json> BaluhostClient::getPowerMonitoring() {
-    return makeRequest("GET", "/api/tapo/power/history");
+    return makeRequest("GET", "/api/smart-devices/power/summary");
 }
 
 std::optional<nlohmann::json> BaluhostClient::getNetworkStats() {

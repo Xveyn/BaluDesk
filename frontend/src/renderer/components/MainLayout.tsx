@@ -79,9 +79,9 @@ export default function MainLayout({ user, onLogout, children, conflictCount = 0
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
       {/* Header */}
-      <header className="border-b border-white/10 bg-white/5 backdrop-blur-md sticky top-0 z-40">
+      <header className="shrink-0 border-b border-white/10 bg-white/5 backdrop-blur-md z-40">
         <div className="flex h-16 items-center justify-between px-6">
           {/* Logo */}
           <div className="flex items-center space-x-3">
@@ -156,7 +156,7 @@ export default function MainLayout({ user, onLogout, children, conflictCount = 0
       </header>
 
       {/* Main Content */}
-      <main className="p-6">
+      <main className="flex-1 min-h-0 overflow-y-auto p-6">
         <div className="mx-auto max-w-7xl">
           {children}
         </div>

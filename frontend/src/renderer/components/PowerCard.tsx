@@ -3,12 +3,19 @@ import { Zap } from 'lucide-react';
 import { useVisibilityPolling } from '../hooks/useVisibilityPolling';
 import { getCached, setCache } from '../hooks/ipcCache';
 
+interface PowerDevice {
+  device_id: number;
+  name: string;
+  watts: number;
+}
+
 interface PowerData {
   currentPower: number;
   energyToday: number;
   trendDelta: number;
   deviceCount: number;
   maxPower: number;
+  devices?: PowerDevice[];
   dev_mode?: boolean;
 }
 
@@ -52,19 +59,9 @@ export const PowerCard: React.FC = () => {
     );
   }
 
-  const progress = Math.min((powerData.currentPower / powerData.maxPower) * 100, 100);
-
-  const getTrendIcon = () => {
-    if (powerData.trendDelta > 1) return '↗';
-    if (powerData.trendDelta < -1) return '↘';
-    return '→';
-  };
-
-  const getTrendColor = () => {
-    if (powerData.trendDelta > 1) return 'text-rose-400';
-    if (powerData.trendDelta < -1) return 'text-emerald-400';
-    return 'text-slate-400';
-  };
+  const progress = powerData.maxPower > 0
+    ? Math.min((powerData.currentPower / powerData.maxPower) * 100, 100)
+    : 0;
 
   return (
     <div className="rounded-xl border border-white/10 bg-gradient-to-br from-amber-500/10 to-orange-600/10 p-4 backdrop-blur-sm hover:border-amber-500/30 hover:shadow-lg hover:shadow-amber-500/20 transition-all">
@@ -75,7 +72,7 @@ export const PowerCard: React.FC = () => {
         <h3 className="text-sm font-medium text-slate-300">Power</h3>
       </div>
 
-      {/* Current Power */}
+      {/* Total Power */}
       <div className="mt-3">
         <p className="text-3xl font-bold text-white">
           {powerData.currentPower.toFixed(1)}
@@ -86,21 +83,19 @@ export const PowerCard: React.FC = () => {
         </p>
       </div>
 
-      {/* Energy Today */}
-      <div className="mt-2 flex items-center justify-between text-xs">
-        <span className="text-slate-400">Today</span>
-        <span className="font-medium text-white">
-          {powerData.energyToday.toFixed(2)} kWh
-        </span>
-      </div>
-
-      {/* Trend */}
-      <div className="mt-1.5 flex items-center justify-between text-xs">
-        <span className="text-slate-400">Trend</span>
-        <span className={`font-medium ${getTrendColor()}`}>
-          {getTrendIcon()} {Math.abs(powerData.trendDelta).toFixed(1)}W
-        </span>
-      </div>
+      {/* Per-device breakdown */}
+      {powerData.devices && powerData.devices.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {powerData.devices.map((device) => (
+            <div key={device.device_id} className="flex items-center justify-between text-xs">
+              <span className="text-slate-400 truncate mr-2">{device.name}</span>
+              <span className="font-medium text-white flex-shrink-0">
+                {device.watts.toFixed(1)} W
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Progress Bar */}
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
@@ -109,9 +104,6 @@ export const PowerCard: React.FC = () => {
           style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}
         />
       </div>
-      <p className="mt-1 text-xs text-slate-400 text-right">
-        {progress.toFixed(0)}% of {powerData.maxPower}W
-      </p>
     </div>
   );
 };

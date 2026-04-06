@@ -1273,7 +1273,8 @@ void IpcServer::handleGetServicesStatus(int requestId) {
             try {
                 auto response = baluhostClient_->getServicesStatus();
                 if (!response) {
-                    sendError("Failed to fetch services status from server", requestId);
+                    std::string errMsg = baluhostClient_->getLastError();
+                    sendError(errMsg.empty() ? "Failed to fetch services status from server" : errMsg, requestId);
                     return;
                 }
 
@@ -2790,10 +2791,12 @@ void IpcServer::handleGetPowerMonitoring(int requestId) {
         Logger::debug("Getting power monitoring (dev-mode: {})", devMode);
 
         PowerMonitoring powerData;
+        nlohmann::json devicesArray = nlohmann::json::array();
 
         if (devMode == "mock") {
             // Mock mode: Return test data
             powerData = MockDataProvider::getMockPowerMonitoring();
+            devicesArray.push_back({{"device_id", 1}, {"name", "NAS Server"}, {"watts", 87.3}});
             Logger::debug("Using mock power data");
         } else {
             // Production mode: Fetch from BaluHost server
@@ -2813,28 +2816,23 @@ void IpcServer::handleGetPowerMonitoring(int requestId) {
 
                 auto& json = *response;
 
-                // Parse server response
-                // Total current power
-                powerData.currentPower = json.value("total_current_power", 0.0);
+                // Parse /api/smart-devices/power/summary response
+                powerData.currentPower = json.value("total_watts", 0.0);
+                powerData.deviceCount = json.value("device_count", 0);
 
-                // Sum energy_today from all devices
-                double totalEnergyToday = 0.0;
-                int deviceCount = 0;
+                // Per-device breakdown: [{device_id, name, watts}]
+                double maxWatts = 0.0;
                 if (json.contains("devices") && json["devices"].is_array()) {
-                    deviceCount = static_cast<int>(json["devices"].size());
+                    devicesArray = json["devices"];
                     for (const auto& device : json["devices"]) {
-                        if (device.contains("latest_sample") && !device["latest_sample"].is_null()) {
-                            double energy = device["latest_sample"].value("energy_today", 0.0);
-                            totalEnergyToday += energy;
-                        }
+                        double w = device.value("watts", 0.0);
+                        if (w > maxWatts) maxWatts = w;
                     }
                 }
 
-                // Calculate trend (optional, simplified - server doesn't provide this directly)
                 powerData.trendDelta = 0.0;
-                powerData.energyToday = totalEnergyToday;
-                powerData.deviceCount = deviceCount;
-                powerData.maxPower = 150.0;  // Reasonable default
+                powerData.energyToday = 0.0;  // Not provided by summary endpoint
+                powerData.maxPower = maxWatts > 0.0 ? (std::max)(maxWatts * 2.0, 150.0) : 150.0;
 
                 Logger::debug("Fetched power monitoring from BaluHost server");
             } catch (const std::exception& e) {
@@ -2854,6 +2852,7 @@ void IpcServer::handleGetPowerMonitoring(int requestId) {
                 {"trendDelta", powerData.trendDelta},
                 {"deviceCount", powerData.deviceCount},
                 {"maxPower", powerData.maxPower},
+                {"devices", devicesArray},
                 {"dev_mode", devMode == "mock"}
             }}
         };

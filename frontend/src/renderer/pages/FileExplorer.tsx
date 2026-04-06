@@ -235,7 +235,7 @@ const FileExplorer: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+    <div className="flex flex-col -m-6" style={{ height: 'calc(100vh - 4rem)' }}>
       {/* Header */}
       <div className="border-b border-white/10 bg-white/5 backdrop-blur-md">
         <div className="flex h-16 items-center justify-between px-6">

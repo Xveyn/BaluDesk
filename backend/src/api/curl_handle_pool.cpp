@@ -116,6 +116,10 @@ void CurlHandlePool::resetHandle(CURL* handle) {
     // Larger receive buffer (512 KB)
     curl_easy_setopt(handle, CURLOPT_BUFFERSIZE, 512L * 1024L);
 
+    // Disable SSL verification (BaluHost uses self-signed certs)
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
+
     // Bypass proxy for local addresses
     curl_easy_setopt(handle, CURLOPT_NOPROXY, "127.0.0.1;localhost");
     curl_easy_setopt(handle, CURLOPT_PROXY, "");
